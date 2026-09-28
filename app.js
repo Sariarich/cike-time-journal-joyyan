@@ -21,7 +21,7 @@ const saveLocal = () => localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
 const SUPABASE_URL = "https://wacwjwtmmziakklcyuvt.supabase.co";
 const SUPABASE_KEY = "sb_publishable_WygT01COp2jBZOKQMmQt-A_SQfVzgI5";
 const OWNER_EMAIL = "signorecarnevale@163.com";
-const PUBLIC_APP_URL = "https://sariarich.github.io/cike-time-journal-joyyan/";
+const PUBLIC_APP_URL = "https://www.signorecarnevale.top/";
 const MIGRATION_KEY = "time-block-pending-migration";
 const cloud = window.supabase?.createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: {
@@ -87,6 +87,7 @@ const summaryKey = (summary) => `${summary.date}:${summary.slot}`;
 const summaryPrompts = ["今天最值得记录的一件事", "今天学到或意识到什么", "明天最重要的一件事"];
 
 function setSyncStatus(text, online = false) { $("#syncStatus").textContent = text; $("#syncDot").classList.toggle("is-online", online); }
+function setAuthMessage(text, failed = false) { const message = $("#authMessage"); message.textContent = text; message.classList.toggle("is-failed", failed); }
 let toastTimer;
 function showToast(message) { const toast = $("#toast"); if (!toast) return; toast.textContent = message; toast.classList.add("is-visible"); clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.classList.remove("is-visible"), 2600); }
 async function exportAllData() {
@@ -464,9 +465,40 @@ async function prepareOwnerLogin() {
       cloudUser = null;
       updateAuthUI();
     }
-    setSyncStatus("正在发送邮箱登录链接");
-    const { error } = await cloud.auth.signInWithOtp({ email: OWNER_EMAIL, options: { emailRedirectTo: emailRedirectUrl(migration), shouldCreateUser: false } });
-    setSyncStatus(error ? `登录链接发送失败：${error.message}` : "链接已发送，请复制邮箱中的登录链接并粘贴到 Safari 打开");
+    setSyncStatus("正在发送验证码");
+    setAuthMessage("正在发送验证码…");
+    const { error } = await cloud.auth.signInWithOtp({ email: OWNER_EMAIL, options: { shouldCreateUser: false } });
+    if (error) {
+      setSyncStatus(`验证码发送失败：${error.message}`);
+      setAuthMessage("验证码发送失败，请检查网络后重试。", true);
+      return;
+    }
+    setSyncStatus("验证码已发送");
+    setAuthMessage("验证码已发送，请在邮件中查看后输入。验证码会过期，可重新发送。");
+    $("#otpCode").focus();
+  } finally { button.disabled = false; }
+}
+async function verifyOwnerOtp(event) {
+  event.preventDefault();
+  if (!cloud || isOwner()) return;
+  const token = $("#otpCode").value.trim();
+  if (!/^\d{8}$/.test(token)) { setAuthMessage("请输入邮件中的 8 位验证码。", true); return; }
+  const button = $("#verifyOtpButton");
+  button.disabled = true;
+  setSyncStatus("正在验证验证码");
+  setAuthMessage("正在验证验证码…");
+  try {
+    const { data, error } = await cloud.auth.verifyOtp({ email: OWNER_EMAIL, token, type: "email" });
+    if (error) {
+      const expired = /expired|invalid/i.test(error.message || "");
+      setSyncStatus(expired ? "验证码已过期或不正确" : "验证码验证失败");
+      setAuthMessage(expired ? "验证码已过期或不正确，请重新发送。" : "验证码验证失败，请检查网络后重试。", true);
+      return;
+    }
+    cloudUser = data.user || null;
+    $("#otpCode").value = "";
+    setAuthMessage("验证成功，正在同步数据。");
+    updateAuthUI();
   } finally { button.disabled = false; }
 }
 async function completePendingMigration() {
@@ -513,8 +545,8 @@ async function startAnonymousSession() {
 function updateAuthUI() {
   const pending = !!pendingMigration();
   const signedIn = isOwner();
-  $("#emailConfirmButton").hidden = signedIn;
-  $("#emailConfirmButton").textContent = pending ? "重新发送登录链接" : "发送登录链接";
+  $("#authPanel").hidden = signedIn;
+  $("#emailConfirmButton").textContent = pending ? "重新发送验证码" : "发送验证码";
   $("#retrySyncButton").hidden = !cloudUser;
   $("#retrySyncButton").textContent = "立即同步";
   setSyncStatus(
@@ -849,6 +881,7 @@ async function removeDailySummary(id, confirmed = false) {
 
 $("#todayLabel").textContent = formatDate(selectedDate);
 $("#emailConfirmButton").addEventListener("click", prepareOwnerLogin);
+$("#otpForm").addEventListener("submit", verifyOwnerOtp);
 $("#retrySyncButton").addEventListener("click", async () => {
   if (cloudUser) {
     await syncToCloud();

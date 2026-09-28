@@ -8,7 +8,7 @@
     <link rel="manifest" href="right-now.webmanifest" />
     <link rel="icon" href="right-now-mark-192-v2.png" type="image/png" />
     <link rel="apple-touch-icon" href="right-now-apple-touch-icon.png" />
-    <link rel="stylesheet" href="styles.css?v=14" />
+    <link rel="stylesheet" href="styles.css?v=15" />
     <title>RIGHT NOW</title>
   </head>
   <body>
@@ -23,12 +23,27 @@
         </div>
         <section class="sync-bar" id="syncBar" aria-label="同步状态">
           <div><span class="sync-icon" id="syncDot" aria-hidden="true">✓</span><span id="syncStatus">本机模式</span></div>
-          <button class="logout-button" id="emailConfirmButton" type="button">连接同步</button>
           <button class="logout-button" id="retrySyncButton" type="button" hidden>同步</button>
           <button class="logout-button" id="exportDataButton" type="button">导出数据</button>
           <button class="icon-button" id="installButton" type="button" aria-label="安装到主屏幕" title="安装到主屏幕" hidden>＋</button>
         </section>
       </header>
+
+      <section class="auth-panel" id="authPanel" aria-labelledby="authHeading">
+        <div>
+          <p class="date-label">连接同步</p>
+          <h2 id="authHeading">输入邮箱验证码</h2>
+          <p class="auth-message" id="authMessage" aria-live="polite">发送验证码后，在这里输入邮件中的 8 位码。</p>
+        </div>
+        <form class="auth-form" id="otpForm">
+          <label for="otpCode">邮箱验证码</label>
+          <input id="otpCode" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{8}" maxlength="8" placeholder="8 位验证码" aria-describedby="authMessage" required />
+          <div class="auth-actions">
+            <button class="logout-button" id="emailConfirmButton" type="button">发送验证码</button>
+            <button class="primary-button" id="verifyOtpButton" type="submit">验证并登录</button>
+          </div>
+        </form>
+      </section>
 
       <nav class="tabs" aria-label="主要视图">
         <button class="tab is-active" data-view="tasks" type="button">MISSION</button>
@@ -192,6 +207,6 @@
       </dialog>
       <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="app.js?v=38"></script>
+    <script src="app.js?v=40"></script>
   </body>
 </html>

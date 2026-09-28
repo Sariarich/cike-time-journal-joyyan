@@ -1,5 +1,5 @@
-const CACHE = "right-now-v34";
-const ASSETS = ["./", "./index.html", "./styles.css?v=14", "./app.js?v=38", "./right-now.webmanifest", "./right-now-mark-192-v2.png", "./right-now-mark-512.png", "./right-now-apple-touch-icon.png", "./right-now-logo.png"];
+const CACHE = "right-now-v36";
+const ASSETS = ["./", "./index.html", "./styles.css?v=15", "./app.js?v=40", "./right-now.webmanifest", "./right-now-mark-192-v2.png", "./right-now-mark-512.png", "./right-now-apple-touch-icon.png", "./right-now-logo.png"];
 self.addEventListener("install", (event) => event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(ASSETS)).then(() => self.skipWaiting())));
 self.addEventListener("activate", (event) => event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key)))).then(() => self.clients.claim())));
 self.addEventListener("fetch", (event) => {
