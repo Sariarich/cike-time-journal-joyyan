@@ -8,7 +8,7 @@
     <link rel="manifest" href="right-now.webmanifest" />
     <link rel="icon" href="right-now-mark-192-v2.png" type="image/png" />
     <link rel="apple-touch-icon" href="right-now-apple-touch-icon.png" />
-    <link rel="stylesheet" href="styles.css?v=15" />
+    <link rel="stylesheet" href="styles.css?v=16" />
     <title>RIGHT NOW</title>
   </head>
   <body>
@@ -24,6 +24,7 @@
         <section class="sync-bar" id="syncBar" aria-label="同步状态">
           <div><span class="sync-icon" id="syncDot" aria-hidden="true">✓</span><span id="syncStatus">本机模式</span></div>
           <button class="logout-button" id="retrySyncButton" type="button" hidden>同步</button>
+          <button class="logout-button" id="signOutButton" type="button" hidden>退出登录</button>
           <button class="logout-button" id="exportDataButton" type="button">导出数据</button>
           <button class="icon-button" id="installButton" type="button" aria-label="安装到主屏幕" title="安装到主屏幕" hidden>＋</button>
         </section>
@@ -44,6 +45,16 @@
           </div>
         </form>
       </section>
+
+      <dialog class="migration-dialog" id="migrationDialog" aria-labelledby="migrationHeading">
+        <div class="dialog-heading"><div><p class="date-label">首次迁移安全确认</p><h2 id="migrationHeading">先备份，再迁移</h2></div></div>
+        <p class="auth-message">以下本机数据会先创建备份。确认后才会开始迁移；迁移中断时，本机数据不会被删除。</p>
+        <ul class="migration-counts" id="migrationCount"></ul>
+        <p class="migration-meta">预计写入账号：<strong id="migrationTargetAccount"></strong></p>
+        <p class="migration-backup-status" id="migrationBackupStatus">备份尚未开始</p>
+        <div class="migration-progress" id="migrationProgress" role="progressbar" aria-label="迁移进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span></span></div>
+        <div class="migration-actions"><button class="logout-button" id="migrationCancelButton" type="button">取消</button><button class="logout-button" id="migrationDownloadBackupButton" type="button" hidden>下载备份</button><button class="logout-button" id="migrationRetryButton" type="button" hidden>重试</button><button class="primary-button" id="migrationConfirmButton" type="button">备份并继续</button></div>
+      </dialog>
 
       <nav class="tabs" aria-label="主要视图">
         <button class="tab is-active" data-view="tasks" type="button">MISSION</button>
@@ -207,6 +218,7 @@
       </dialog>
       <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="app.js?v=40"></script>
+    <script src="migration.js?v=1"></script>
+    <script src="app.js?v=43"></script>
   </body>
 </html>

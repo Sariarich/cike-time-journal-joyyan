@@ -6,6 +6,7 @@ state.pendingTaskUpserts ||= [];
 state.pendingTaskDeletes ||= [];
 state.pendingRecordUpserts ||= [];
 state.pendingRecordDeletes ||= [];
+state.pendingBookSync ||= false;
 state.thoughts ||= [];
 state.pendingThoughtUpserts ||= [];
 state.pendingThoughtDeletes ||= [];
@@ -22,7 +23,7 @@ const SUPABASE_URL = "https://wacwjwtmmziakklcyuvt.supabase.co";
 const SUPABASE_KEY = "sb_publishable_WygT01COp2jBZOKQMmQt-A_SQfVzgI5";
 const OWNER_EMAIL = "signorecarnevale@163.com";
 const PUBLIC_APP_URL = "https://www.signorecarnevale.top/";
-const MIGRATION_KEY = "time-block-pending-migration";
+const AUTH_CHANNEL_NAME = "right-now-auth";
 const cloud = window.supabase?.createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: {
     storage: window.localStorage,
@@ -33,6 +34,21 @@ const cloud = window.supabase?.createClient(SUPABASE_URL, SUPABASE_KEY, {
   }
 });
 let cloudUser = null;
+const SESSION_STATE = Object.freeze({
+  SIGNED_OUT: "signed-out",
+  RESTORING: "restoring",
+  SIGNED_IN: "signed-in",
+  EXPIRED: "expired",
+  SIGNING_OUT: "signing-out",
+  OFFLINE: "offline",
+  UNAVAILABLE: "unavailable"
+});
+let sessionState = cloud ? SESSION_STATE.RESTORING : SESSION_STATE.UNAVAILABLE;
+let manualSignOutRequested = false;
+let hydratedSessionToken = null;
+let networkListenersRegistered = false;
+let authChannel = null;
+let explicitSignOutUntil = 0;
 const save = () => { saveLocal(); syncToCloud(); };
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const urlDate = new URLSearchParams(window.location.search).get("date");
@@ -68,8 +84,7 @@ function queueRecordDelete(id) {
 function recordErrorMessage(error, action = "保存") {
   const message = error?.message || "网络或权限异常";
   if (error?.code === "23514" || /check constraint/i.test(message)) return `${action}失败：云端尚未启用“休息”分类，请运行分类升级`;
-  if (/row-level security|permission denied/i.test(message)) return `${action}失败：没有写入权限`;
-  return `${action}失败：${message}`;
+  return `${action}失败：${classifySyncError(error).message}`;
 }
 function queueThoughtUpsert(id) {
   state.pendingThoughtDeletes = state.pendingThoughtDeletes.filter((pendingId) => pendingId !== id);
@@ -80,6 +95,7 @@ function queueThoughtDelete(id) {
   if (!state.pendingThoughtDeletes.includes(id)) state.pendingThoughtDeletes.push(id);
 }
 let selectedBookId = state.books[0]?.id || null;
+let editingExcerptId = null;
 let bookScrollTimer;
 let activeThoughtMenuId = null;
 const expandedThoughtIds = new Set();
@@ -114,37 +130,49 @@ function updateCategorySwatch(selectId, swatchId) {
   $(swatchId).style.setProperty("--category-color", category.color);
   $(swatchId).title = `${category.label}：${category.color}`;
 }
-const pendingMigration = () => { try { return JSON.parse(localStorage.getItem(MIGRATION_KEY) || "null"); } catch { return null; } };
 const isOwner = () => cloudUser?.email?.toLowerCase() === OWNER_EMAIL;
-function emailRedirectUrl(migration) {
-  const url = new URL(PUBLIC_APP_URL);
-  if (migration) {
-    url.searchParams.set("migration_source", migration.sourceUserId);
-    url.searchParams.set("migration_token", migration.tokenHash);
-  }
-  return url.href;
+const isNetworkError = (error) => !navigator.onLine || /network|fetch|offline|internet/i.test(error?.message || "");
+function classifyError(error, messages) {
+  const message = error?.message || "";
+  const code = String(error?.code || "");
+  const status = Number(error?.status || 0);
+  if (isNetworkError(error)) return { kind: "network", message: messages.network };
+  if (/jwt.*expired|token.*expired|invalid.*jwt|session.*expired|auth.*expired/i.test(message) || ["PGRST301", "401"].includes(code) || status === 401) return { kind: "expired", message: messages.expired };
+  if (code === "42501" || /row-level security|permission denied|not authorized|forbidden/i.test(message) || status === 403) return { kind: "permission", message: messages.permission };
+  if (code === "23505" || status === 409 || /conflict|duplicate key|already exists/i.test(message)) return { kind: "conflict", message: messages.conflict };
+  if (status >= 500 || /internal server|service unavailable|gateway|server error/i.test(message)) return { kind: "server", message: messages.server };
+  return { kind: "unknown", message: messages.unknown };
 }
-function captureMigrationFromUrl() {
-  const url = new URL(window.location.href);
-  const sourceUserId = url.searchParams.get("migration_source");
-  const tokenHash = url.searchParams.get("migration_token");
-  if (!sourceUserId || !tokenHash) return;
-  localStorage.setItem(MIGRATION_KEY, JSON.stringify({ sourceUserId, tokenHash }));
-  url.searchParams.delete("migration_source");
-  url.searchParams.delete("migration_token");
-  history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+function classifyAuthError(error) {
+  return classifyError(error, {
+    network: "网络不可用，请恢复网络后重试。",
+    expired: "登录会话已过期，请重新登录。",
+    permission: "当前账号没有认证权限。",
+    conflict: "登录状态冲突，请重新尝试。",
+    server: "认证服务暂时不可用，请稍后重试。",
+    unknown: "认证失败，请稍后重试。"
+  });
 }
-async function hashToken(token) { const bytes = new TextEncoder().encode(token); const hash = await crypto.subtle.digest("SHA-256", bytes); return Array.from(new Uint8Array(hash)).map((byte) => byte.toString(16).padStart(2, "0")).join(""); }
-function blobToDataUrl(blob) { return new Promise((resolve) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.readAsDataURL(blob); }); }
-async function cacheBookImagesForMigration() {
-  for (const book of state.books) for (const field of ["excerpts", "reflections"]) for (const note of book[field] || []) {
-    if (note.image && !note.image.startsWith("data:")) { const response = await fetch(note.image); if (response.ok) note.image = await blobToDataUrl(await response.blob()); }
-    if (note.image) note.imagePath = null;
-  }
-  saveLocal();
+function classifySyncError(error) {
+  return classifyError(error, {
+    network: "网络不可用，本机修改已保留，等待重试。",
+    expired: "登录会话已过期，本机修改已保留，请重新登录。",
+    permission: "没有同步权限，本机修改已保留。",
+    conflict: "云端数据发生冲突，本机修改已保留，等待处理。",
+    server: "云端服务暂时不可用，本机修改已保留，等待重试。",
+    unknown: "同步失败，本机修改已保留，请重试。"
+  });
 }
+function broadcastAuthEvent(type) {
+  authChannel?.postMessage({ type });
+}
+const migrationService = window.createMigrationService({ getState: () => state, saveLocal, getCloud: () => cloud, getCloudUser: () => cloudUser, getOwnerEmail: () => OWNER_EMAIL, getPublicAppUrl: () => PUBLIC_APP_URL, setStatus: setSyncStatus });
+const migrationController = migrationService;
+const pendingMigration = migrationService.pendingMigration;
+const emailRedirectUrl = migrationService.emailRedirectUrl;
+const captureMigrationFromUrl = migrationService.captureMigrationFromUrl;
 async function syncToCloud() {
-  if (!cloudUser || !cloud) return;
+  if (!cloudUser || !cloud) return { ok: false, local: true };
   setSyncStatus("正在同步", true);
   const tasks = state.tasks.map((task) => ({ id: task.id, user_id: cloudUser.id, title: task.title, planned_time: task.time || null, date: task.date, done: task.done }));
   const records = state.records.map((record) => ({ id: record.id, user_id: cloudUser.id, title: record.title, start_time: record.start, end_time: record.end, category: record.category || "fun", date: record.date }));
@@ -155,10 +183,16 @@ async function syncToCloud() {
   if (!taskResult.error) state.pendingTaskUpserts = [];
   if (!recordResult.error) state.pendingRecordUpserts = [];
   const taskDeleteResults = await Promise.all([...state.pendingTaskDeletes].map(deleteTaskFromCloud));
-  for (const id of [...state.pendingRecordDeletes]) await deleteRecordFromCloud(id);
+  const recordDeleteResults = [];
+  for (const id of [...state.pendingRecordDeletes]) recordDeleteResults.push(await deleteRecordFromCloud(id));
   saveLocal();
-  const syncFailed = taskResult.error || recordResult.error || taskDeleteResults.some((result) => !result.ok);
-  setSyncStatus(syncFailed ? "同步失败" : "已同步", !syncFailed);
+  const failure = taskResult.error || recordResult.error || taskDeleteResults.find((result) => !result.ok)?.error || recordDeleteResults.find((result) => !result.ok)?.error;
+  if (failure) {
+    setSyncStatus(`同步失败：${classifySyncError(failure).message}`, false);
+    return { ok: false, error: failure };
+  }
+  setSyncStatus("已同步", true);
+  return { ok: true };
 }
 async function loadFromCloud() {
   if (!cloudUser || !cloud) return;
@@ -168,7 +202,10 @@ async function loadFromCloud() {
     cloud.from("time_records").select("*").eq("user_id", cloudUser.id),
     cloud.from("daily_summaries").select("*").eq("user_id", cloudUser.id)
   ]);
-  if (taskResult.error || recordResult.error) { setSyncStatus("同步失败"); return; }
+  if (taskResult.error || recordResult.error) {
+    setSyncStatus(`同步失败：${classifySyncError(taskResult.error || recordResult.error).message}`, false);
+    return;
+  }
   const pendingTasks = new Map(state.tasks.filter((task) => state.pendingTaskUpserts.includes(task.id)).map((task) => [task.id, task]));
   const cloudTasks = new Map(taskResult.data.map((task) => [task.id, { id: task.id, title: task.title, time: task.planned_time || "", date: task.date, done: task.done }]));
   for (const [id, task] of pendingTasks) cloudTasks.set(id, task);
@@ -193,20 +230,37 @@ async function loadFromCloud() {
     state.dailySummaries = [...cloudSummaries.values()];
   }
   saveLocal(); renderTasks(); renderRecords(); renderStats(); renderDailySummaries(); renderDateControls();
-  if (state.pendingTaskUpserts.length || state.pendingTaskDeletes.length) await syncToCloud();
+  let syncFailed = false;
+  if (state.pendingTaskUpserts.length || state.pendingTaskDeletes.length) {
+    const result = await syncToCloud();
+    syncFailed ||= !result.ok;
+  }
   for (const id of [...state.pendingRecordUpserts]) {
     const record = state.records.find((item) => item.id === id);
-    if (record) await syncRecordToCloud(record);
+    if (record) {
+      const result = await syncRecordToCloud(record);
+      syncFailed ||= !result.ok;
+    }
   }
-  for (const id of [...state.pendingRecordDeletes]) await deleteRecordFromCloud(id);
-  if (summaryResult.error) { setSyncStatus("日程已同步；总结读取失败", false); return; }
-  for (const summary of summariesToUpload) await syncDailySummaryToCloud(summary);
+  for (const id of [...state.pendingRecordDeletes]) {
+    const result = await deleteRecordFromCloud(id);
+    syncFailed ||= !result.ok;
+  }
+  if (summaryResult.error) {
+    setSyncStatus(`总结读取失败：${classifySyncError(summaryResult.error).message}`, false);
+    return;
+  }
+  for (const summary of summariesToUpload) {
+    const result = await syncDailySummaryToCloud(summary);
+    syncFailed ||= !result.ok;
+  }
+  if (syncFailed) return;
   setSyncStatus("已同步", true);
 }
 async function deleteTaskFromCloud(id) {
   if (!cloudUser || !cloud) return { ok: false, local: true };
   const { error } = await cloud.from("time_tasks").delete().eq("id", id).eq("user_id", cloudUser.id);
-  if (error) { setSyncStatus(`删除任务失败：${error.message || "网络或权限异常"}`, false); return { ok: false }; }
+  if (error) { setSyncStatus(`删除任务失败：${classifySyncError(error).message}`, false); return { ok: false, error }; }
   state.pendingTaskDeletes = state.pendingTaskDeletes.filter((pendingId) => pendingId !== id);
   saveLocal();
   return { ok: true };
@@ -217,7 +271,7 @@ async function syncRecordToCloud(record) {
   const { error } = await cloud.from("time_records").upsert({ id: record.id, user_id: cloudUser.id, title: record.title, start_time: record.start, end_time: record.end, category: record.category || "fun", date: record.date });
   if (error) {
     setSyncStatus(recordErrorMessage(error), false);
-    return { ok: false };
+    return { ok: false, error };
   }
   state.pendingRecordUpserts = state.pendingRecordUpserts.filter((id) => id !== record.id);
   saveLocal();
@@ -230,7 +284,7 @@ async function deleteRecordFromCloud(id) {
   const { error } = await cloud.from("time_records").delete().eq("id", id).eq("user_id", cloudUser.id);
   if (error) {
     setSyncStatus(recordErrorMessage(error, "删除"), false);
-    return { ok: false };
+    return { ok: false, error };
   }
   state.pendingRecordDeletes = state.pendingRecordDeletes.filter((pendingId) => pendingId !== id);
   saveLocal();
@@ -239,10 +293,9 @@ async function deleteRecordFromCloud(id) {
 }
 function summaryErrorMessage(error, action = "保存") {
   const message = error?.message || "网络或权限异常";
-  if (/row-level security|permission denied/i.test(message)) return `${action}失败：没有写入权限`;
   if (/relation .*daily_summaries|does not exist/i.test(message)) return `${action}失败：总结数据表尚未完成升级`;
   if (/check constraint|char_length/i.test(message)) return `${action}失败：内容需要在 1 至 500 字之间`;
-  return `${action}失败：${message}`;
+  return `${action}失败：${classifySyncError(error).message}`;
 }
 function summarySyncMeta(summary) {
   if (summary.syncState === "syncing") return { text: "正在同步", tone: "" };
@@ -272,7 +325,7 @@ async function syncDailySummaryToCloud(summary) {
     summary.syncError = summaryErrorMessage(error);
     saveLocal(); renderDailySummaries();
     setSyncStatus(summary.syncError, false);
-    return { ok: false };
+    return { ok: false, error };
   }
   summary.syncState = "synced";
   summary.syncError = "";
@@ -291,7 +344,7 @@ async function deleteDailySummaryFromCloud(summary) {
     summary.syncError = summaryErrorMessage(error, "删除");
     saveLocal(); renderDailySummaries();
     setSyncStatus(summary.syncError, false);
-    return { ok: false };
+    return { ok: false, error };
   }
   setSyncStatus("已同步", true);
   return { ok: true };
@@ -301,34 +354,83 @@ async function signedImage(path) {
   const { data } = await cloud.storage.from("reading-images").createSignedUrl(path, 60 * 60 * 24);
   return data?.signedUrl || "";
 }
+function bookSyncResult({ inserted = 0, errors = [], error = null, local = false } = {}) {
+  const success = errors.length === 0 && !local;
+  return { success, ok: success, inserted, failed: errors.length, errors, error, local };
+}
+function bookSyncError(entityType, entityId, error) {
+  return { entityType, entityId, message: error?.message || "同步失败", error };
+}
 async function syncBooksToCloud() {
-  if (!cloudUser || !cloud) return;
+  try {
+    return await syncBooksToCloudAttempt();
+  } catch (error) {
+    const result = bookSyncResult({ errors: [bookSyncError("books", null, error)], error });
+    state.pendingBookSync = true;
+    saveLocal();
+    setSyncStatus(`阅读笔记同步失败：${classifySyncError(error).message}`, false);
+    return result;
+  }
+}
+async function syncBooksToCloudAttempt() {
+  if (!cloudUser || !cloud) {
+    state.pendingBookSync = state.books.length > 0;
+    saveLocal();
+    return bookSyncResult({ local: true, errors: [bookSyncError("books", null, new Error("未登录，无法同步阅读数据"))] });
+  }
   setSyncStatus("正在同步", true);
   const bookRows = state.books.map((book) => ({ id: book.id, user_id: cloudUser.id, title: book.title, author: book.author || null, rating: book.rating || 0 }));
-  const { error: bookError } = await cloud.from("reading_books").upsert(bookRows);
-  if (bookError) { setSyncStatus("阅读笔记同步失败"); return; }
+  const { data: syncedBooks, error: bookError } = bookRows.length ? await cloud.from("reading_books").upsert(bookRows).select("id") : { data: [], error: null };
+  if (bookError) {
+    state.pendingBookSync = true;
+    saveLocal();
+    setSyncStatus(`阅读笔记同步失败：${classifySyncError(bookError).message}`, false);
+    return bookSyncResult({ errors: bookRows.map((book) => bookSyncError("books", book.id, bookError)), error: bookError });
+  }
   const noteRows = [];
+  const errors = [];
+  let inserted = syncedBooks?.length || 0;
   for (const book of state.books) {
     for (const [field, noteType] of [["excerpts", "excerpt"], ["reflections", "reflection"]]) {
       for (const note of book[field] || []) {
         if (note.image?.startsWith("data:") && !note.imagePath) {
-          const imagePath = `${cloudUser.id}/${book.id}/${note.id}.jpg`;
-          const blob = await (await fetch(note.image)).blob();
-          const { error } = await cloud.storage.from("reading-images").upload(imagePath, blob, { upsert: true, contentType: "image/jpeg" });
-          if (error) { setSyncStatus("图片上传失败"); continue; }
-          note.imagePath = imagePath;
+          try {
+            const imagePath = `${cloudUser.id}/${book.id}/${note.id}.jpg`;
+            const response = await fetch(note.image);
+            if (!response.ok) throw new Error("图片数据读取失败");
+            const { error } = await cloud.storage.from("reading-images").upload(imagePath, await response.blob(), { upsert: true, contentType: "image/jpeg" });
+            if (error) throw error;
+            note.imagePath = imagePath;
+            inserted += 1;
+          } catch (error) {
+            errors.push(bookSyncError("images", note.id, error));
+            continue;
+          }
         }
         noteRows.push({ id: note.id, book_id: book.id, user_id: cloudUser.id, note_type: noteType, body: note.text || null, image_path: note.imagePath || null });
       }
     }
   }
-  const { error: noteError } = noteRows.length ? await cloud.from("reading_notes").upsert(noteRows) : { error: null };
-  saveLocal(); setSyncStatus(noteError ? "阅读笔记同步失败" : "已同步", !noteError);
+  const { data: syncedNotes, error: noteError } = noteRows.length ? await cloud.from("reading_notes").upsert(noteRows).select("id") : { data: [], error: null };
+  if (noteError) errors.push(...noteRows.map((note) => bookSyncError("readingNotes", note.id, noteError)));
+  inserted += syncedNotes?.length || 0;
+  const result = bookSyncResult({ inserted, errors, error: errors[0]?.error || null });
+  state.pendingBookSync = !result.success;
+  saveLocal();
+  if (!result.success) {
+    setSyncStatus(`阅读笔记同步失败：${classifySyncError(result.error).message}`, false);
+    return result;
+  }
+  setSyncStatus("已同步", true);
+  return result;
 }
 async function loadBooksFromCloud() {
   if (!cloudUser || !cloud) return;
   const [bookResult, noteResult] = await Promise.all([cloud.from("reading_books").select("*").eq("user_id", cloudUser.id).order("updated_at", { ascending: false }), cloud.from("reading_notes").select("*").eq("user_id", cloudUser.id).order("created_at", { ascending: false })]);
-  if (bookResult.error || noteResult.error) { setSyncStatus("阅读笔记同步失败"); return; }
+  if (bookResult.error || noteResult.error) {
+    setSyncStatus(`阅读笔记读取失败：${classifySyncError(bookResult.error || noteResult.error).message}`, false);
+    return;
+  }
   if (!bookResult.data.length && state.books.length) { await syncBooksToCloud(); return; }
   const notesWithImages = await Promise.all(noteResult.data.map(async (note) => ({ ...note, image: await signedImage(note.image_path) })));
   state.books = bookResult.data.map((book) => ({ id: book.id, title: book.title, author: book.author || "", rating: book.rating || 0, excerpts: notesWithImages.filter((note) => note.book_id === book.id && note.note_type === "excerpt").map((note) => ({ id: note.id, text: note.body || "", image: note.image, imagePath: note.image_path })), reflections: notesWithImages.filter((note) => note.book_id === book.id && note.note_type === "reflection").map((note) => ({ id: note.id, text: note.body || "", image: note.image, imagePath: note.image_path })) }));
@@ -343,26 +445,29 @@ async function deleteNoteFromCloud(note) {
 async function updateBookInCloud(book) {
   if (!cloudUser || !cloud) return { ok: false, local: true };
   const { error } = await cloud.from("reading_books").update({ title: book.title, author: book.author || null, rating: book.rating || 0, updated_at: new Date().toISOString() }).eq("id", book.id).eq("user_id", cloudUser.id);
-  if (error) { setSyncStatus(`书籍修改失败：${error.message || "网络或权限异常"}`, false); return { ok: false }; }
+  if (error) {
+    state.pendingBookSync = true;
+    saveLocal();
+    setSyncStatus(`书籍修改失败：${classifySyncError(error).message}`, false);
+    return { ok: false, error };
+  }
   return { ok: true };
 }
 async function deleteBookFromCloud(book) {
   if (!cloudUser || !cloud) return { ok: false, local: true };
   setSyncStatus("正在删除", true);
   const { data: notes, error: notesReadError } = await cloud.from("reading_notes").select("image_path").eq("book_id", book.id).eq("user_id", cloudUser.id);
-  if (notesReadError) { setSyncStatus(`删除失败：${notesReadError.message}`, false); return { ok: false }; }
+  if (notesReadError) { setSyncStatus(`删除失败：${classifySyncError(notesReadError).message}`, false); return { ok: false, error: notesReadError }; }
   const { error: notesError } = await cloud.from("reading_notes").delete().eq("book_id", book.id).eq("user_id", cloudUser.id);
-  if (notesError) { setSyncStatus(`删除笔记失败：${notesError.message}`, false); return { ok: false }; }
+  if (notesError) { setSyncStatus(`删除笔记失败：${classifySyncError(notesError).message}`, false); return { ok: false, error: notesError }; }
   const paths = (notes || []).map((note) => note.image_path).filter(Boolean);
   if (paths.length) await cloud.storage.from("reading-images").remove(paths);
   const { error } = await cloud.from("reading_books").delete().eq("id", book.id).eq("user_id", cloudUser.id);
-  if (error) { setSyncStatus(`删除书籍失败：${error.message}`, false); return { ok: false }; }
+  if (error) { setSyncStatus(`删除书籍失败：${classifySyncError(error).message}`, false); return { ok: false, error }; }
   setSyncStatus("已同步", true); return { ok: true };
 }
-async function saveReadingNote(book, type, text, image) {
+async function saveReadingNote(book, type, note, text, image) {
   if (!cloudUser || !cloud) return { ok: false, local: true };
-  const field = type === "excerpt" ? "excerpts" : "reflections";
-  const note = (book[field] || [])[0] || { id: uid(), text: "", image: "" };
   let imagePath = note.imagePath || null;
   if (image?.startsWith("data:")) {
     imagePath = `${cloudUser.id}/${book.id}/${note.id}.jpg`;
@@ -372,7 +477,7 @@ async function saveReadingNote(book, type, text, image) {
   }
   const { error } = await cloud.from("reading_notes").upsert({ id: note.id, book_id: book.id, user_id: cloudUser.id, note_type: type, body: text || null, image_path: imagePath }, { onConflict: "id" });
   if (error) return { ok: false, error };
-  note.text = text; note.image = image || note.image || ""; note.imagePath = imagePath; book[field] = [note, ...(book[field] || []).filter((item) => item.id !== note.id)];
+  note.text = text; note.image = image || note.image || ""; note.imagePath = imagePath;
   return { ok: true };
 }
 function thoughtSyncMeta(thought) {
@@ -385,8 +490,7 @@ function thoughtErrorMessage(error, action = "保存") {
   const message = error?.message || "网络或权限异常";
   if (/relation .*thought_entries|does not exist/i.test(message)) return `${action}失败：思考数据表尚未完成升级`;
   if (/column .*title|title .*column/i.test(message)) return `${action}失败：思考标题数据尚未完成升级`;
-  if (/row-level security|permission denied/i.test(message)) return `${action}失败：没有写入权限`;
-  return `${action}失败：${message}`;
+  return `${action}失败：${classifySyncError(error).message}`;
 }
 async function syncThoughtToCloud(thought) {
   if (!cloudUser || !cloud) {
@@ -404,7 +508,7 @@ async function syncThoughtToCloud(thought) {
     thought.syncError = thoughtErrorMessage(error);
     saveLocal(); renderThoughts();
     setSyncStatus(thought.syncError, false);
-    return { ok: false };
+    return { ok: false, error };
   }
   state.pendingThoughtUpserts = state.pendingThoughtUpserts.filter((id) => id !== thought.id);
   thought.syncState = "synced";
@@ -419,7 +523,7 @@ async function deleteThoughtFromCloud(id) {
   const { error } = await cloud.from("thought_entries").delete().eq("id", id).eq("user_id", cloudUser.id);
   if (error) {
     setSyncStatus(thoughtErrorMessage(error, "删除"), false);
-    return { ok: false };
+    return { ok: false, error };
   }
   state.pendingThoughtDeletes = state.pendingThoughtDeletes.filter((pendingId) => pendingId !== id);
   saveLocal();
@@ -427,11 +531,28 @@ async function deleteThoughtFromCloud(id) {
   return { ok: true };
 }
 async function syncThoughtsToCloud() {
+  let failure = null;
   for (const id of [...state.pendingThoughtUpserts]) {
     const thought = state.thoughts.find((item) => item.id === id);
-    if (thought) await syncThoughtToCloud(thought);
+    if (thought) {
+      const result = await syncThoughtToCloud(thought);
+      failure ||= result.ok ? null : result.error || new Error("思考同步失败");
+    }
   }
-  for (const id of [...state.pendingThoughtDeletes]) await deleteThoughtFromCloud(id);
+  for (const id of [...state.pendingThoughtDeletes]) {
+    const result = await deleteThoughtFromCloud(id);
+    failure ||= result.ok ? null : result.error || new Error("思考删除失败");
+  }
+  return failure ? { ok: false, error: failure } : { ok: true };
+}
+async function syncPendingDailySummaries() {
+  let failure = null;
+  const pending = state.dailySummaries.filter((summary) => summary.content?.trim() && (summary.pendingAction || summary.syncState !== "synced"));
+  for (const summary of pending) {
+    const result = summary.pendingAction === "delete" ? await deleteDailySummaryFromCloud(summary) : await syncDailySummaryToCloud(summary);
+    failure ||= result.ok ? null : result.error || new Error("总结同步失败");
+  }
+  return failure ? { ok: false, error: failure } : { ok: true };
 }
 async function loadThoughtsFromCloud() {
   if (!cloudUser || !cloud) return;
@@ -452,25 +573,26 @@ async function prepareOwnerLogin() {
   try {
     let migration = pendingMigration();
     if (cloudUser?.is_anonymous) {
-      setSyncStatus("正在准备迁移数据");
-      await cacheBookImagesForMigration();
-      const token = `${crypto.randomUUID()}-${crypto.randomUUID()}`;
-      const tokenHash = await hashToken(token);
-      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-      const { error } = await cloud.from("account_migrations").upsert({ source_user_id: cloudUser.id, token_hash: tokenHash, expires_at: expiresAt });
-      if (error) { setSyncStatus(`迁移准备失败：${error.message}`); return; }
-      migration = { sourceUserId: cloudUser.id, tokenHash, expiresAt };
-      localStorage.setItem(MIGRATION_KEY, JSON.stringify(migration));
+      try {
+        setSyncStatus("正在准备迁移入口");
+        migration = await migrationController.prepareMigration();
+      } catch (error) {
+        migrationService.abortMigration(error);
+        setAuthMessage(`迁移准备失败：${error.message || "本地数据仍保留"}`, true);
+        return;
+      }
       await cloud.auth.signOut();
       cloudUser = null;
+      sessionState = SESSION_STATE.SIGNED_OUT;
       updateAuthUI();
     }
     setSyncStatus("正在发送验证码");
     setAuthMessage("正在发送验证码…");
     const { error } = await cloud.auth.signInWithOtp({ email: OWNER_EMAIL, options: { shouldCreateUser: false } });
     if (error) {
-      setSyncStatus(`验证码发送失败：${error.message}`);
-      setAuthMessage("验证码发送失败，请检查网络后重试。", true);
+      const classified = classifyAuthError(error);
+      setSyncStatus(`验证码发送失败：${classified.message}`, false);
+      setAuthMessage(classified.message, true);
       return;
     }
     setSyncStatus("验证码已发送");
@@ -490,70 +612,205 @@ async function verifyOwnerOtp(event) {
   try {
     const { data, error } = await cloud.auth.verifyOtp({ email: OWNER_EMAIL, token, type: "email" });
     if (error) {
-      const expired = /expired|invalid/i.test(error.message || "");
-      setSyncStatus(expired ? "验证码已过期或不正确" : "验证码验证失败");
-      setAuthMessage(expired ? "验证码已过期或不正确，请重新发送。" : "验证码验证失败，请检查网络后重试。", true);
+      const classified = classifyAuthError(error);
+      if (classified.kind === "expired") {
+        sessionState = SESSION_STATE.EXPIRED;
+        updateAuthUI();
+      } else {
+        setSyncStatus(`验证码验证失败：${classified.message}`, false);
+      }
+      setAuthMessage(classified.message, true);
       return;
     }
     cloudUser = data.user || null;
+    sessionState = SESSION_STATE.SIGNED_IN;
     $("#otpCode").value = "";
     setAuthMessage("验证成功，正在同步数据。");
     updateAuthUI();
   } finally { button.disabled = false; }
 }
-async function completePendingMigration() {
-  const pending = pendingMigration();
-  if (!pending || !cloudUser || cloudUser.is_anonymous || !cloud) return false;
-  if (!isOwner()) { setSyncStatus("请使用指定邮箱完成确认"); return false; }
-  setSyncStatus("正在迁移云端数据");
-  const { error } = await cloud.rpc("claim_anonymous_migration", { p_source_user_id: pending.sourceUserId, p_token_hash: pending.tokenHash });
-  if (error) { setSyncStatus(`数据迁移失败：${error.message}`); return false; }
-  localStorage.removeItem(MIGRATION_KEY);
-  await syncBooksToCloud();
-  setSyncStatus("数据已迁移到指定邮箱", true);
-  return true;
+async function previewPendingMigration() {
+  if (!cloudUser || cloudUser.is_anonymous || !isOwner() || !pendingMigration()) return null;
+  return migrationController.preview(async () => {
+    try {
+      setSyncStatus("正在创建本地备份");
+      await migrationController.createMigrationBackup();
+      setSyncStatus("正在迁移云端数据");
+      const result = await migrationController.executeMigration();
+      if (!result.ok) throw result.error || new Error("迁移未完成");
+      const booksResult = await syncBooksToCloud();
+      if (!booksResult || booksResult.success !== true) throw booksResult?.error || new Error("阅读笔记或图片迁移未完成");
+      const completion = await migrationController.completeMigration();
+      if (!completion.ok) throw completion.error || new Error("云端迁移数量不一致");
+      setSyncStatus("数据已迁移到指定邮箱", true);
+    } catch (error) {
+      migrationController.abortMigration(error);
+      setAuthMessage("迁移未完成，请从备份恢复或重试。", true);
+      throw error;
+    }
+  });
 }
-async function initCloud() {
-  if (!cloud) { setSyncStatus("本机模式"); return; }
-  captureMigrationFromUrl();
-  const { data } = await cloud.auth.getSession();
-  cloudUser = data.session?.user || null;
-  updateAuthUI();
-  if (cloudUser) {
-    await completePendingMigration();
-    await loadFromCloud();
-    await loadBooksFromCloud();
-    await loadThoughtsFromCloud();
-  } else if (pendingMigration()) {
-    setSyncStatus("请用指定邮箱登录");
-  } else {
-    setSyncStatus("请用指定邮箱登录");
+async function hydrateSignedInSession(session) {
+  const sessionToken = session?.access_token || session?.user?.id;
+  if (!sessionToken || hydratedSessionToken === sessionToken) return;
+  hydratedSessionToken = sessionToken;
+  const migrationReview = await previewPendingMigration();
+  if (pendingMigration()) {
+    if (migrationReview?.error) setAuthMessage("迁移未完成，请从备份恢复或重试。", true);
+    setSyncStatus("迁移未完成，本机数据仍保留。", false);
+    return;
   }
-  cloud.auth.onAuthStateChange(async (_event, session) => { cloudUser = session?.user || null; updateAuthUI(); if (cloudUser) { await completePendingMigration(); await loadFromCloud(); await loadBooksFromCloud(); await loadThoughtsFromCloud(); } });
-}
-async function startAnonymousSession() {
-  if (!cloud) return;
-  setSyncStatus("正在连接云端");
-  const { data, error } = await cloud.auth.signInAnonymously();
-  if (error) { setSyncStatus(`云端连接失败：${error.message}`); return; }
-  cloudUser = data.user;
-  updateAuthUI();
   await loadFromCloud();
   await loadBooksFromCloud();
   await loadThoughtsFromCloud();
 }
+async function handleAuthStateChange(event, session) {
+  if (session?.user) {
+    cloudUser = session.user;
+    sessionState = SESSION_STATE.SIGNED_IN;
+    updateAuthUI();
+    if (event === "SIGNED_IN") broadcastAuthEvent("signed-in");
+    if (event !== "TOKEN_REFRESHED") await hydrateSignedInSession(session);
+    return;
+  }
+
+  cloudUser = null;
+  hydratedSessionToken = null;
+  if (manualSignOutRequested || Date.now() < explicitSignOutUntil) {
+    sessionState = SESSION_STATE.SIGNED_OUT;
+    manualSignOutRequested = false;
+  } else if (event === "SIGNED_OUT" || event === "TOKEN_REFRESH_FAILED") {
+    sessionState = SESSION_STATE.EXPIRED;
+    broadcastAuthEvent("session-expired");
+  } else {
+    sessionState = SESSION_STATE.SIGNED_OUT;
+  }
+  updateAuthUI();
+}
+async function restoreCloudSession() {
+  if (!cloud) return;
+  try {
+    const { data, error } = await cloud.auth.getSession();
+    if (error) throw error;
+    await handleAuthStateChange("INITIAL_SESSION", data.session);
+  } catch (error) {
+    cloudUser = null;
+    sessionState = classifyAuthError(error).kind === "network" ? SESSION_STATE.OFFLINE : SESSION_STATE.EXPIRED;
+    updateAuthUI();
+  }
+}
+function registerNetworkListeners() {
+  if (networkListenersRegistered) return;
+  networkListenersRegistered = true;
+  window.addEventListener("offline", () => {
+    if (sessionState === SESSION_STATE.SIGNING_OUT) return;
+    sessionState = SESSION_STATE.OFFLINE;
+    updateAuthUI();
+  });
+  window.addEventListener("online", () => {
+    if (!cloud) return;
+    sessionState = SESSION_STATE.RESTORING;
+    updateAuthUI();
+    void restoreCloudSession();
+  });
+}
+function registerAuthChannel() {
+  if (authChannel || !("BroadcastChannel" in window)) return;
+  authChannel = new BroadcastChannel(AUTH_CHANNEL_NAME);
+  authChannel.addEventListener("message", ({ data }) => {
+    if (!data || !["signed-in", "signed-out", "session-expired"].includes(data.type)) return;
+    if (data.type === "signed-in") {
+      sessionState = SESSION_STATE.RESTORING;
+      updateAuthUI();
+      void restoreCloudSession();
+      return;
+    }
+    cloudUser = null;
+    hydratedSessionToken = null;
+    if (data.type === "signed-out") {
+      explicitSignOutUntil = Date.now() + 3000;
+      sessionState = SESSION_STATE.SIGNED_OUT;
+      setAuthMessage("已在另一标签页退出登录，本机数据仍保留。");
+    } else {
+      sessionState = SESSION_STATE.EXPIRED;
+      setAuthMessage("会话已在另一标签页过期，请重新登录。本机数据仍保留。", true);
+    }
+    updateAuthUI();
+  });
+}
+async function initCloud() {
+  if (!cloud) {
+    sessionState = SESSION_STATE.UNAVAILABLE;
+    updateAuthUI();
+    return;
+  }
+  captureMigrationFromUrl();
+  sessionState = SESSION_STATE.RESTORING;
+  updateAuthUI();
+  registerNetworkListeners();
+  registerAuthChannel();
+  await restoreCloudSession();
+  cloud.auth.onAuthStateChange((event, session) => {
+    // Defer asynchronous work so the auth client can finish its own state transition first.
+    queueMicrotask(() => { void handleAuthStateChange(event, session); });
+  });
+}
+async function startAnonymousSession() {
+  if (!cloud) return;
+  sessionState = SESSION_STATE.RESTORING;
+  updateAuthUI();
+  const { data, error } = await cloud.auth.signInAnonymously();
+  if (error) {
+    sessionState = classifyAuthError(error).kind === "network" ? SESSION_STATE.OFFLINE : SESSION_STATE.SIGNED_OUT;
+    updateAuthUI();
+    return;
+  }
+  cloudUser = data.user;
+  sessionState = SESSION_STATE.SIGNED_IN;
+  updateAuthUI();
+  await hydrateSignedInSession(data.session || { user: data.user });
+}
+async function signOut() {
+  if (!cloud) return;
+  manualSignOutRequested = true;
+  explicitSignOutUntil = Date.now() + 3000;
+  sessionState = SESSION_STATE.SIGNING_OUT;
+  updateAuthUI();
+  const { error } = await cloud.auth.signOut();
+  if (error) {
+    manualSignOutRequested = false;
+    explicitSignOutUntil = 0;
+    sessionState = classifyAuthError(error).kind === "network" ? SESSION_STATE.OFFLINE : SESSION_STATE.SIGNED_IN;
+    updateAuthUI();
+    setAuthMessage(classifyAuthError(error).message, true);
+    return;
+  }
+  cloudUser = null;
+  hydratedSessionToken = null;
+  sessionState = SESSION_STATE.SIGNED_OUT;
+  updateAuthUI();
+  setAuthMessage("已退出登录，本机数据仍保留。");
+  broadcastAuthEvent("signed-out");
+}
 function updateAuthUI() {
   const pending = !!pendingMigration();
   const signedIn = isOwner();
+  $("#syncBar").dataset.authState = sessionState;
   $("#authPanel").hidden = signedIn;
   $("#emailConfirmButton").textContent = pending ? "重新发送验证码" : "发送验证码";
   $("#retrySyncButton").hidden = !cloudUser;
   $("#retrySyncButton").textContent = "立即同步";
-  setSyncStatus(
-    cloudUser ? (signedIn ? "已登录 QQ 邮箱" : "正在迁移旧数据") :
-    "请用指定邮箱登录",
-    signedIn
-  );
+  $("#signOutButton").hidden = !cloudUser;
+  const status = {
+    [SESSION_STATE.RESTORING]: ["正在恢复登录", false],
+    [SESSION_STATE.SIGNED_IN]: [signedIn ? "已登录 QQ 邮箱" : "已登录，正在迁移旧数据", signedIn],
+    [SESSION_STATE.EXPIRED]: ["会话已过期，请重新登录。本机数据仍保留", false],
+    [SESSION_STATE.SIGNING_OUT]: ["正在退出登录", false],
+    [SESSION_STATE.SIGNED_OUT]: ["未登录，本机数据仍保留", false],
+    [SESSION_STATE.OFFLINE]: ["网络不可用，本机数据仍保留", false],
+    [SESSION_STATE.UNAVAILABLE]: ["本机模式，本机数据仍保留", false]
+  }[sessionState] || ["未登录，本机数据仍保留", false];
+  setSyncStatus(status[0], status[1]);
 }
 
 function showView(name) {
@@ -751,7 +1008,7 @@ async function removeThought(id) {
 }
 
 function stars(rating) { return [1, 2, 3, 4, 5].map((value) => `<button class="star-button ${value <= rating ? "is-on" : ""}" type="button" data-rate="${value}" aria-label="${value} 星">★</button>`).join(""); }
-function noteItem(note, type) { return `<article class="note-item"><div class="note-copy">${note.text ? `<p>${escapeHtml(note.text)}</p>` : ""}${note.image ? `<img src="${note.image}" alt="${type}图片" />` : ""}</div><button class="delete-button" type="button" data-note-delete="${note.id}" data-note-type="${type}" aria-label="删除${type}" title="删除">×</button></article>`; }
+function noteItem(note, type) { return `<article class="note-item"><div class="note-copy">${note.text ? `<p>${escapeHtml(note.text)}</p>` : ""}${note.image ? `<img src="${note.image}" alt="${type}图片" />` : ""}</div><div class="note-actions">${type === "书摘" ? `<button class="edit-button" type="button" data-excerpt-edit="${note.id}" aria-label="编辑书摘" title="编辑">✎</button>` : ""}<button class="delete-button" type="button" data-note-delete="${note.id}" data-note-type="${type}" aria-label="删除${type}" title="删除">×</button></div></article>`; }
 function noteFor(book, type) { return (book[type === "excerpt" ? "excerpts" : "reflections"] || [])[0] || null; }
 function centerSelectedBookCard(behavior = "auto") {
   const card = document.querySelector(`[data-book-card="${selectedBookId}"][data-book-copy="middle"]`);
@@ -785,11 +1042,13 @@ function renderBooks() {
   if (!book) return;
   const excerpts = (book.excerpts || []).map((note) => noteItem(note, "书摘")).join("") || '<p class="note-empty">还没有书摘</p>';
   const reflections = (book.reflections || []).map((note) => noteItem(note, "心得")).join("") || '<p class="note-empty">还没有读书心得</p>';
-  const excerpt = noteFor(book, "excerpt"); const reflection = noteFor(book, "reflection");
-  $("#bookDetail").innerHTML = `<div class="note-section"><div class="note-section-title"><h4>书摘</h4><span>截图或文字片段</span></div><form class="note-form" id="excerptForm"><textarea id="excerptText" maxlength="1000" placeholder="摘下让你停下来的那一段文字">${escapeHtml(excerpt?.text || "")}</textarea><label class="upload-button">上传截图<input id="excerptImage" type="file" accept="image/*" /></label><button class="primary-button" type="submit">${excerpt ? "更新书摘" : "保存书摘"}</button><button class="text-button" type="button" data-note-clear="excerpt" ${excerpt ? "" : "disabled"}>删除书摘</button></form><div class="note-list">${excerpts}</div></div><div class="note-section"><div class="note-section-title"><h4>读书心得</h4><span>图片或文字</span></div><form class="note-form" id="reflectionForm"><textarea id="reflectionText" maxlength="1600" placeholder="这本书给你留下了什么？">${escapeHtml(reflection?.text || "")}</textarea><label class="upload-button">上传图片<input id="reflectionImage" type="file" accept="image/*" /></label><button class="primary-button" type="submit">${reflection ? "更新心得" : "保存心得"}</button><button class="text-button" type="button" data-note-clear="reflection" ${reflection ? "" : "disabled"}>删除心得</button></form><div class="note-list">${reflections}</div></div>`;
+  const editedExcerpt = (book.excerpts || []).find((note) => note.id === editingExcerptId) || null;
+  if (!editedExcerpt) editingExcerptId = null;
+  const reflection = noteFor(book, "reflection");
+  $("#bookDetail").innerHTML = `<div class="note-section"><div class="note-section-title"><h4>书摘</h4><span>截图或文字片段</span></div><form class="note-form" id="excerptForm"><textarea id="excerptText" placeholder="摘下让你停下来的那一段文字">${escapeHtml(editedExcerpt?.text || "")}</textarea><label class="upload-button">上传截图<input id="excerptImage" type="file" accept="image/*" /></label><button class="primary-button" type="submit">${editedExcerpt ? "保存修改" : "发布书摘"}</button>${editedExcerpt ? '<button class="text-button" type="button" data-excerpt-cancel>取消编辑</button>' : ""}</form><div class="note-list">${excerpts}</div></div><div class="note-section"><div class="note-section-title"><h4>读书心得</h4><span>图片或文字</span></div><form class="note-form" id="reflectionForm"><textarea id="reflectionText" maxlength="1600" placeholder="这本书给你留下了什么？">${escapeHtml(reflection?.text || "")}</textarea><label class="upload-button">上传图片<input id="reflectionImage" type="file" accept="image/*" /></label><button class="primary-button" type="submit">${reflection ? "更新心得" : "保存心得"}</button><button class="text-button" type="button" data-note-clear="reflection" ${reflection ? "" : "disabled"}>删除心得</button></form><div class="note-list">${reflections}</div></div>`;
 }
 function imageData(file) { return new Promise((resolve) => { if (!file) return resolve(""); const reader = new FileReader(); reader.onload = () => { const image = new Image(); image.onload = () => { const max = 1200; const scale = Math.min(1, max / Math.max(image.width, image.height)); const canvas = document.createElement("canvas"); canvas.width = Math.round(image.width * scale); canvas.height = Math.round(image.height * scale); canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height); resolve(canvas.toDataURL("image/jpeg", .82)); }; image.src = reader.result; }; reader.readAsDataURL(file); }); }
-function saveBooks() { saveLocal(); renderBooks(); syncBooksToCloud(); }
+function saveBooks() { state.pendingBookSync = true; saveLocal(); renderBooks(); syncBooksToCloud(); }
 function openBookEditor(id) { const book = state.books.find((item) => item.id === id); if (!book) return; $("#bookEditForm").dataset.bookId = id; $("#bookEditTitle").value = book.title; $("#bookEditAuthor").value = book.author || ""; $("#bookEditDialog").showModal(); }
 async function saveBookEdit(event) { event.preventDefault(); const book = state.books.find((item) => item.id === event.currentTarget.dataset.bookId); const title = $("#bookEditTitle").value.trim(); if (!book || !title) return; book.title = title; book.author = $("#bookEditAuthor").value.trim(); saveLocal(); renderBooks(); $("#bookEditDialog").close(); const result = await updateBookInCloud(book); showToast(result.ok || result.local ? "书籍修改成功" : "书籍修改失败"); }
 async function removeBook(id) { const book = state.books.find((item) => item.id === id); if (!book || !window.confirm(`确定删除《${book.title}》及其全部书摘和心得吗？`)) return; state.books = state.books.filter((item) => item.id !== id); selectedBookId = state.books[0]?.id || null; saveLocal(); renderBooks(); const result = await deleteBookFromCloud(book); showToast(result.ok || result.local ? "书籍及笔记已删除" : "删除失败，请重试"); }
@@ -884,13 +1143,23 @@ $("#emailConfirmButton").addEventListener("click", prepareOwnerLogin);
 $("#otpForm").addEventListener("submit", verifyOwnerOtp);
 $("#retrySyncButton").addEventListener("click", async () => {
   if (cloudUser) {
-    await syncToCloud();
-    await syncBooksToCloud();
-    await syncThoughtsToCloud();
+    if (pendingMigration()) {
+      await previewPendingMigration();
+      if (pendingMigration()) return;
+    }
+    const results = [
+      await syncToCloud(),
+      await syncBooksToCloud(),
+      await syncThoughtsToCloud(),
+      await syncPendingDailySummaries()
+    ];
+    if (results.every((result) => result.ok)) setSyncStatus("已同步", true);
+    else setSyncStatus("仍有待同步数据，请恢复网络或重新登录后重试。", false);
   } else {
     await prepareOwnerLogin();
   }
 });
+$("#signOutButton").addEventListener("click", () => { void signOut(); });
 $("#thoughtForm").addEventListener("submit", saveThought);
 $("#thoughtEditForm").addEventListener("submit", saveThoughtEdit);
 $("#thoughtEditClose").addEventListener("click", () => $("#thoughtEditDialog").close());
@@ -923,6 +1192,9 @@ document.addEventListener("click", (event) => {
   if (bookEdit) { openBookEditor(bookEdit.dataset.bookEdit); return; }
   const bookDelete = event.target.closest("[data-book-delete]");
   if (bookDelete) { removeBook(bookDelete.dataset.bookDelete); return; }
+  const excerptEdit = event.target.closest("[data-excerpt-edit]");
+  if (excerptEdit) { editingExcerptId = excerptEdit.dataset.excerptEdit; renderBooks(); $("#excerptText")?.focus(); return; }
+  if (event.target.closest("[data-excerpt-cancel]")) { editingExcerptId = null; renderBooks(); return; }
   const noteClear = event.target.closest("[data-note-clear]");
   if (noteClear) { clearSelectedNote(noteClear.dataset.noteClear); return; }
   const deleteNote = event.target.closest("[data-note-delete]");
@@ -932,7 +1204,7 @@ document.addEventListener("submit", async (event) => {
   if (event.target.matches("[data-summary-form]")) { await saveDailySummary(event); return; }
   if (event.target.id === "newBookForm") { event.preventDefault(); const title = $("#bookTitle").value.trim(); if (!title) return; const book = { id: uid(), title, author: $("#bookAuthor").value.trim(), rating: 0, excerpts: [], reflections: [] }; state.books.push(book); selectedBookId = book.id; saveBooks(); $("#newBookDialog").close(); showToast("书籍已创建"); return; }
   if (!["excerptForm", "reflectionForm"].includes(event.target.id)) return;
-  event.preventDefault(); const book = state.books.find((item) => item.id === selectedBookId); if (!book) return; const isExcerpt = event.target.id === "excerptForm"; const type = isExcerpt ? "excerpt" : "reflection"; const text = $(isExcerpt ? "#excerptText" : "#reflectionText").value.trim(); const image = await imageData($(isExcerpt ? "#excerptImage" : "#reflectionImage").files[0]); if (!text && !image && !noteFor(book, type)) return; const field = isExcerpt ? "excerpts" : "reflections"; const note = noteFor(book, type) || { id: uid(), text: "", image: "" }; note.text = text; if (image) note.image = image; book[field] = [note, ...(book[field] || []).filter((item) => item.id !== note.id)]; saveLocal(); renderBooks(); const result = await saveReadingNote(book, type, text, image || note.image); if (!result.ok && !result.local) showToast(`保存失败：${result.error?.message || "网络或权限异常"}`); else showToast(isExcerpt ? "书摘已更新" : "心得已更新");
+  event.preventDefault(); const book = state.books.find((item) => item.id === selectedBookId); if (!book) return; const isExcerpt = event.target.id === "excerptForm"; const type = isExcerpt ? "excerpt" : "reflection"; const text = $(isExcerpt ? "#excerptText" : "#reflectionText").value.trim(); const image = await imageData($(isExcerpt ? "#excerptImage" : "#reflectionImage").files[0]); const field = isExcerpt ? "excerpts" : "reflections"; const editedNote = isExcerpt ? (book.excerpts || []).find((note) => note.id === editingExcerptId) : noteFor(book, type); if (!text && !image && !editedNote) return; const note = editedNote || { id: uid(), text: "", image: "" }; note.text = text; if (image) note.image = image; book[field] = editedNote ? (book[field] || []).map((item) => item.id === note.id ? note : item) : [note, ...(book[field] || [])]; if (isExcerpt) editingExcerptId = null; saveLocal(); renderBooks(); const result = await saveReadingNote(book, type, note, text, image || note.image); if (!result.ok && !result.local) showToast(`保存失败：${result.error?.message || "网络或权限异常"}`); else showToast(isExcerpt ? (editedNote ? "书摘已修改" : "书摘已发布") : "心得已更新");
 });
 $("#taskForm").addEventListener("submit", (event) => { event.preventDefault(); const title = $("#taskTitle").value.trim(); if (!title) return; const task = { id: uid(), title, time: $("#taskTime").value, date: selectedDate, done: false }; state.tasks.push(task); queueTaskUpsert(task.id); save(); event.target.reset(); renderTasks(); $("#taskTitle").focus(); });
 $("#recordForm").addEventListener("submit", async (event) => { event.preventDefault(); const title = $("#recordTitle").value.trim(); const start = $("#recordStart").value; const end = $("#recordEnd").value; if (!title || title.length > 500 || !start || !end || minutes(end) <= minutes(start)) { setSyncStatus("请填写内容，并确认结束时间晚于开始时间"); return; } const record = { id: uid(), title, start, end, category: $("#recordCategory").value, date: selectedDate }; state.records.push(record); queueRecordUpsert(record.id); saveLocal(); event.target.reset(); updateRecordCount(); renderRecords(); renderStats(); renderDateControls(); await syncRecordToCloud(record); $("#recordTitle").focus(); });
