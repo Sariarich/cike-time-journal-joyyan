@@ -1331,6 +1331,23 @@ $("#retrySyncButton").addEventListener("click", async () => {
 });
 $("#conflictButton").addEventListener("click", openConflictDialog);
 $("#signOutButton").addEventListener("click", () => { void signOut(); });
+$("#syncStatusButton").addEventListener("click", () => { $("#retrySyncButton").click(); });
+$("#accountMenuButton").addEventListener("click", () => {
+  const menu = $("#accountMenu");
+  const isOpen = !menu.hidden;
+  menu.hidden = isOpen;
+  $("#accountMenuButton").setAttribute("aria-expanded", String(!isOpen));
+});
+document.addEventListener("click", (event) => {
+  if (event.target.closest(".account-menu-wrap")) return;
+  $("#accountMenu").hidden = true;
+  $("#accountMenuButton").setAttribute("aria-expanded", "false");
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  $("#accountMenu").hidden = true;
+  $("#accountMenuButton").setAttribute("aria-expanded", "false");
+});
 $("#thoughtForm").addEventListener("submit", saveThought);
 $("#thoughtEditForm").addEventListener("submit", saveThoughtEdit);
 $("#thoughtEditClose").addEventListener("click", () => $("#thoughtEditDialog").close());

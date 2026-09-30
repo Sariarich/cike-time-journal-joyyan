@@ -21,13 +21,23 @@
           <button class="date-today-button" type="button" id="todayDateButton">今天</button>
           <button class="date-icon-button" type="button" id="nextDateButton" aria-label="后一天" title="后一天">›</button>
         </div>
-        <section class="sync-bar" id="syncBar" aria-label="同步状态">
-          <div><span class="sync-icon" id="syncDot" aria-hidden="true">✓</span><span id="syncStatus">本机模式</span></div>
-          <button class="logout-button" id="retrySyncButton" type="button" hidden>同步</button>
-          <button class="logout-button" id="conflictButton" type="button" hidden>冲突</button>
-          <button class="logout-button" id="signOutButton" type="button" hidden>退出登录</button>
-          <button class="logout-button" id="exportDataButton" type="button">导出数据</button>
-          <button class="icon-button" id="installButton" type="button" aria-label="安装到主屏幕" title="安装到主屏幕" hidden>＋</button>
+        <section class="sync-bar" id="syncBar" aria-label="同步与账户">
+          <button class="sync-status-button" id="syncStatusButton" type="button" aria-label="查看同步状态或立即同步">
+            <span class="sync-icon" id="syncDot" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 19H7a5 5 0 1 1 1.3-9.8A6 6 0 0 1 19.8 11 4 4 0 0 1 17.5 19Z"/><path d="m9.5 14 2 2 4-4"/></svg></span>
+            <span id="syncStatus">本机模式</span>
+          </button>
+          <div class="account-menu-wrap">
+            <button class="account-menu-button" id="accountMenuButton" type="button" aria-label="打开账户菜单" aria-haspopup="menu" aria-expanded="false">
+              <span class="account-avatar" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="3.2"/><path d="M5.5 20c.7-3.5 3.1-5.5 6.5-5.5s5.8 2 6.5 5.5"/></svg></span><span class="account-chevron" aria-hidden="true">⌄</span>
+            </button>
+            <div class="account-menu" id="accountMenu" role="menu" hidden>
+              <button id="retrySyncButton" type="button" role="menuitem" hidden>立即同步</button>
+              <button id="conflictButton" type="button" role="menuitem" hidden>处理冲突</button>
+              <button id="exportDataButton" type="button" role="menuitem">导出数据</button>
+              <button id="installButton" type="button" role="menuitem" hidden>安装到主屏幕</button>
+              <button id="signOutButton" type="button" role="menuitem" hidden>退出登录</button>
+            </div>
+          </div>
         </section>
       </header>
 
