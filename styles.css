@@ -100,3 +100,5 @@
 .book-card-copy .book-stars{display:flex;justify-content:center;gap:0}
 .book-card-copy .star-button{font-size:20px}
 .book-detail>.note-section:first-child{padding-top:0}
+
+.conflict-dialog{width:min(94vw,860px)}.conflict-note{margin:16px 0;color:var(--muted);line-height:1.6}.conflict-versions{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:14px 0}.conflict-versions section{min-width:0;border:1px solid var(--line);border-radius:5px;padding:12px;background:#f7f7f5}.conflict-versions h4,.conflict-merge-label{font-size:13px}.conflict-versions pre{max-height:220px;margin:8px 0 0;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.6 inherit}.conflict-dialog textarea{width:100%;min-height:130px;margin-top:7px;resize:vertical}.conflict-dialog .migration-actions{flex-wrap:wrap}@media(max-width:700px){.conflict-versions{grid-template-columns:1fr}.conflict-versions pre{max-height:160px}.conflict-dialog .migration-actions{justify-content:stretch}.conflict-dialog .migration-actions button{flex:1 1 100%}}

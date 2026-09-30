@@ -296,13 +296,20 @@ function createMigrationService({ getState, saveLocal, getCloud, getCloudUser, g
       if (!data?.success) return { ok: false, error: migrationConflictError(data), conflict: data };
       migration = savePendingMigration({ ...migration, claimedAt: new Date().toISOString() });
     }
-    const verification = await verifyMigrationResult({ includeImages: false });
-    if (!verification.valid) return { ok: false, error: new Error("云端迁移数量不一致"), verification };
-    return { ok: true, verification };
+    // The claim moves data that was already stored under the anonymous user.
+    // Local-only records are synced by the caller immediately afterwards, so
+    // count verification must run after that sync, not here.
+    return { ok: true };
   };
   const completeMigration = async () => {
     const verification = await verifyMigrationResult();
-    if (!verification.valid) return { ok: false, error: new Error("云端迁移数量不一致"), verification };
+    if (!verification.valid) {
+      const mismatch = Object.entries(verification.details)
+        .filter(([, result]) => !result.matched)
+        .map(([entity, result]) => `${entity}：预期 ${result.expected}，实际 ${result.actual}`)
+        .join("；");
+      return { ok: false, error: new Error(`云端迁移数量不一致（${mismatch}）`), verification };
+    }
     localStorage.setItem(MIGRATION_COMPLETED_KEY, JSON.stringify({ completedAt: new Date().toISOString(), expected: verification.expected, baseline: verification.baseline, actual: verification.actual }));
     localStorage.removeItem(MIGRATION_KEY);
     return { ok: true, verification };

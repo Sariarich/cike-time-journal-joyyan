@@ -8,7 +8,7 @@
     <link rel="manifest" href="right-now.webmanifest" />
     <link rel="icon" href="right-now-mark-192-v2.png" type="image/png" />
     <link rel="apple-touch-icon" href="right-now-apple-touch-icon.png" />
-    <link rel="stylesheet" href="styles.css?v=16" />
+    <link rel="stylesheet" href="styles.css?v=17" />
     <title>RIGHT NOW</title>
   </head>
   <body>
@@ -24,6 +24,7 @@
         <section class="sync-bar" id="syncBar" aria-label="同步状态">
           <div><span class="sync-icon" id="syncDot" aria-hidden="true">✓</span><span id="syncStatus">本机模式</span></div>
           <button class="logout-button" id="retrySyncButton" type="button" hidden>同步</button>
+          <button class="logout-button" id="conflictButton" type="button" hidden>冲突</button>
           <button class="logout-button" id="signOutButton" type="button" hidden>退出登录</button>
           <button class="logout-button" id="exportDataButton" type="button">导出数据</button>
           <button class="icon-button" id="installButton" type="button" aria-label="安装到主屏幕" title="安装到主屏幕" hidden>＋</button>
@@ -216,9 +217,15 @@
           <button class="primary-button" type="submit">创建</button>
         </form>
       </dialog>
+      <dialog class="record-dialog conflict-dialog" id="conflictDialog">
+        <div id="conflictDialogContent"></div>
+      </dialog>
       <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="migration.js?v=1"></script>
-    <script src="app.js?v=43"></script>
+    <script src="sync-queue.js?v=1"></script>
+    <script src="sync-engine.js?v=1"></script>
+    <script src="conflict.js?v=1"></script>
+    <script src="app.js?v=46"></script>
   </body>
 </html>
