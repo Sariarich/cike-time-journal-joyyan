@@ -1224,7 +1224,6 @@ async function saveBookEdit(event) { event.preventDefault(); const book = state.
 async function removeBook(id) { const book = state.books.find((item) => item.id === id); if (!book || !window.confirm(`确定删除《${book.title}》及其全部书摘和心得吗？`)) return; persistSyncOperation("book", id, "delete", cloneSyncPayload(book)); state.books = state.books.filter((item) => item.id !== id); selectedBookId = state.books[0]?.id || null; saveLocal(); renderBooks(); const result = await deleteBookFromCloud(book); showToast(result.ok || result.local ? "书籍及笔记已删除" : "删除失败，请重试"); }
 
 function escapeHtml(value) { const div = document.createElement("div"); div.textContent = value; return div.innerHTML; }
-function updateRecordCount() { $("#recordTitleCount").textContent = `${$("#recordTitle").value.length} / 500`; }
 function openRecordEditor(id) {
   const record = state.records.find((item) => item.id === id);
   if (!record) return;
@@ -1235,7 +1234,6 @@ function openRecordEditor(id) {
   $("#recordEditCategory").value = record.category || "fun";
   updateCategorySwatch("#recordEditCategory", "#recordEditCategorySwatch");
   $("#recordEditTitle").value = record.title;
-  $("#recordEditCount").textContent = `${record.title.length} / 500`;
   $("#recordDialog").showModal();
 }
 async function saveRecordEdit(event) {
@@ -1245,7 +1243,7 @@ async function saveRecordEdit(event) {
   const title = $("#recordEditTitle").value.trim();
   const start = $("#recordEditStart").value;
   const end = $("#recordEditEnd").value;
-  if (!record || !title || title.length > 500 || !start || !end || minutes(end) <= minutes(start)) {
+  if (!record || !title || !start || !end || minutes(end) <= minutes(start)) {
     setSyncStatus("请填写内容，并确认结束时间晚于开始时间");
     return;
   }
@@ -1384,15 +1382,13 @@ document.addEventListener("submit", async (event) => {
   event.preventDefault(); const book = state.books.find((item) => item.id === selectedBookId); if (!book) return; const isExcerpt = event.target.id === "excerptForm"; const type = isExcerpt ? "excerpt" : "reflection"; const text = $(isExcerpt ? "#excerptText" : "#reflectionText").value.trim(); const image = await imageData($(isExcerpt ? "#excerptImage" : "#reflectionImage").files[0]); const field = isExcerpt ? "excerpts" : "reflections"; const editingId = isExcerpt ? editingExcerptId : editingReflectionId; const editedNote = (book[field] || []).find((note) => note.id === editingId); if (!text && !image && !editedNote) return; const note = editedNote || { id: uid(), text: "", image: "" }; note.text = text; note.updatedAt = new Date().toISOString(); if (image) note.image = image; book[field] = editedNote ? (book[field] || []).map((item) => item.id === note.id ? note : item) : [note, ...(book[field] || [])]; if (isExcerpt) editingExcerptId = null; else editingReflectionId = null; persistSyncOperation("reading-note", note.id, "upsert"); saveLocal(); renderBooks(); const result = await saveReadingNote(book, type, note, text, image || note.image); if (!result.ok && !result.local) showToast(`保存失败：${result.error?.message || "网络或权限异常"}`); else showToast(editedNote ? `${isExcerpt ? "书摘" : "心得"}已修改` : `${isExcerpt ? "书摘" : "心得"}已发布`);
 });
 $("#taskForm").addEventListener("submit", (event) => { event.preventDefault(); const title = $("#taskTitle").value.trim(); if (!title) return; const task = { id: uid(), title, time: $("#taskTime").value, date: selectedDate, done: false }; state.tasks.push(task); queueTaskUpsert(task.id); save(); event.target.reset(); renderTasks(); $("#taskTitle").focus(); });
-$("#recordForm").addEventListener("submit", async (event) => { event.preventDefault(); const title = $("#recordTitle").value.trim(); const start = $("#recordStart").value; const end = $("#recordEnd").value; if (!title || title.length > 500 || !start || !end || minutes(end) <= minutes(start)) { setSyncStatus("请填写内容，并确认结束时间晚于开始时间"); return; } const record = { id: uid(), title, start, end, category: $("#recordCategory").value, date: selectedDate }; state.records.push(record); queueRecordUpsert(record.id); saveLocal(); event.target.reset(); updateRecordCount(); renderRecords(); renderStats(); renderDateControls(); await syncRecordToCloud(record); $("#recordTitle").focus(); });
+$("#recordForm").addEventListener("submit", async (event) => { event.preventDefault(); const title = $("#recordTitle").value.trim(); const start = $("#recordStart").value; const end = $("#recordEnd").value; if (!title || !start || !end || minutes(end) <= minutes(start)) { setSyncStatus("请填写内容，并确认结束时间晚于开始时间"); return; } const record = { id: uid(), title, start, end, category: $("#recordCategory").value, date: selectedDate }; state.records.push(record); queueRecordUpsert(record.id); saveLocal(); event.target.reset(); renderRecords(); renderStats(); renderDateControls(); await syncRecordToCloud(record); $("#recordTitle").focus(); });
 $("#recordEditForm").addEventListener("submit", saveRecordEdit);
 $("#recordEditClose").addEventListener("click", () => $("#recordDialog").close());
 $("#recordCategory").addEventListener("change", () => updateCategorySwatch("#recordCategory", "#recordCategorySwatch"));
 $("#recordEditCategory").addEventListener("change", () => updateCategorySwatch("#recordEditCategory", "#recordEditCategorySwatch"));
 $("#summaryEditForm").addEventListener("submit", saveSummaryEdit);
 $("#summaryEditClose").addEventListener("click", () => $("#summaryDialog").close());
-$("#recordTitle").addEventListener("input", updateRecordCount);
-$("#recordEditTitle").addEventListener("input", () => { $("#recordEditCount").textContent = `${$("#recordEditTitle").value.length} / 500`; });
 $("#summaryEditContent").addEventListener("input", () => { $("#summaryEditCount").textContent = `${$("#summaryEditContent").value.length} / 500`; });
 $("#selectedDateButton").addEventListener("click", () => { calendarMonth = new Date(dateFromKey(selectedDate).getFullYear(), dateFromKey(selectedDate).getMonth(), 1); renderCalendar(); $("#dateCalendar").showModal(); });
 $("#calendarCloseButton").addEventListener("click", () => $("#dateCalendar").close());

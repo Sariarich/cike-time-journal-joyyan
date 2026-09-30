@@ -90,20 +90,20 @@
           <span class="time-total" id="timeTotal">0 小时</span>
         </div>
         <form class="entry-form timeline-form" id="recordForm">
-          <div class="time-fields"><label class="visually-hidden" for="recordStart">开始时间</label>
+          <div class="time-fields record-time-fields"><label class="visually-hidden" for="recordStart">开始时间</label>
             <input id="recordStart" type="time" aria-label="开始时间" required />
-            <span>至</span>
+            <span aria-hidden="true">—</span>
             <input id="recordEnd" type="time" aria-label="结束时间" required />
           </div>
-          <div class="record-title-field"><label class="visually-hidden" for="recordTitle">记录内容</label><textarea id="recordTitle" maxlength="500" placeholder="记录这段时间做了什么" autocomplete="off" required></textarea><span class="char-count" id="recordTitleCount">0 / 500</span></div>
-          <div class="category-picker"><span class="category-swatch" id="recordCategorySwatch" aria-hidden="true"></span><select id="recordCategory" aria-label="事件分类">
+          <div class="category-picker record-category-picker"><span class="category-swatch" id="recordCategorySwatch" aria-hidden="true"></span><select id="recordCategory" aria-label="事件分类">
             <option value="money">钱</option>
             <option value="learning">学习</option>
             <option value="network">人脉</option>
             <option value="fun">娱乐</option>
             <option value="rest">休息</option>
           </select></div>
-          <button class="primary-button" type="submit" aria-label="记录时间" title="记录时间">记录</button>
+          <div class="record-title-field"><label class="visually-hidden" for="recordTitle">记录内容</label><textarea id="recordTitle" placeholder="写下你刚完成的事" autocomplete="off" required></textarea></div>
+          <button class="primary-button record-submit-button" type="submit" aria-label="记录时间" title="记录时间">记录</button>
         </form>
         <div class="timeline" id="recordList"></div>
         <div class="empty-state" id="recordEmpty">还没有时间记录。完成一段时间后，回来写下它。</div>
@@ -179,8 +179,8 @@
         <div class="dialog-heading"><div><p class="date-label" id="recordEditDate"></p><h3>编辑记录</h3></div><button class="delete-button" type="button" id="recordEditClose" aria-label="关闭编辑" title="关闭">×</button></div>
         <div class="time-fields"><input id="recordEditStart" type="time" aria-label="开始时间" required /><span>至</span><input id="recordEditEnd" type="time" aria-label="结束时间" required /></div>
         <div class="category-picker category-picker--wide"><span class="category-swatch" id="recordEditCategorySwatch" aria-hidden="true"></span><select id="recordEditCategory" aria-label="事件分类"><option value="money">钱</option><option value="learning">学习</option><option value="network">人脉</option><option value="fun">娱乐</option><option value="rest">休息</option></select></div>
-        <textarea id="recordEditTitle" maxlength="500" placeholder="记录这段时间做了什么" required></textarea>
-        <div class="form-footer"><span class="char-count" id="recordEditCount">0 / 500</span><button class="primary-button" type="submit">保存修改</button></div>
+        <textarea id="recordEditTitle" placeholder="记录这段时间做了什么" required></textarea>
+        <div class="form-footer"><button class="primary-button" type="submit">保存修改</button></div>
       </form>
     </dialog>
     <dialog class="record-dialog" id="summaryDialog">
