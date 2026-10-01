@@ -155,7 +155,19 @@ function applyConflictResolution(key, decision) {
   void durableSyncEngine?.run();
 }
 
-function setSyncStatus(text, online = false) { $("#syncStatus").textContent = text; $("#syncDot").classList.toggle("is-online", online); }
+function setSyncStatus(text, online = false) {
+  const icon = $("#syncDot");
+  const symbol = online
+    ? '<path d="m9.5 14 2 2 4-4"/>'
+    : /正在|恢复|迁移|退出/.test(text)
+      ? '<circle cx="9" cy="14" r=".8" fill="currentColor" stroke="none"/><circle cx="12" cy="14" r=".8" fill="currentColor" stroke="none"/><circle cx="15" cy="14" r=".8" fill="currentColor" stroke="none"/>'
+      : '<path d="M12 10v4"/><circle cx="12" cy="17" r=".7" fill="currentColor" stroke="none"/>';
+  $("#syncStatus").textContent = text;
+  $("#syncStatusButton").setAttribute("aria-label", `同步状态：${text}。点击立即同步`);
+  $("#syncStatusButton").title = text;
+  icon.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 19H7a5 5 0 1 1 1.3-9.8A6 6 0 0 1 19.8 11 4 4 0 0 1 17.5 19Z"/>${symbol}</svg>`;
+  icon.classList.toggle("is-online", online);
+}
 function setAuthMessage(text, failed = false) { const message = $("#authMessage"); message.textContent = text; message.classList.toggle("is-failed", failed); }
 let toastTimer;
 function showToast(message) { const toast = $("#toast"); if (!toast) return; toast.textContent = message; toast.classList.add("is-visible"); clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.classList.remove("is-visible"), 2600); }
@@ -946,7 +958,7 @@ function updateAuthUI() {
   $("#signOutButton").hidden = !cloudUser;
   const status = {
     [SESSION_STATE.RESTORING]: ["正在恢复登录", false],
-    [SESSION_STATE.SIGNED_IN]: [signedIn ? "已登录 QQ 邮箱" : "已登录，正在迁移旧数据", signedIn],
+    [SESSION_STATE.SIGNED_IN]: [signedIn ? "已同步" : "正在迁移旧数据", signedIn],
     [SESSION_STATE.EXPIRED]: ["会话已过期，请重新登录。本机数据仍保留", false],
     [SESSION_STATE.SIGNING_OUT]: ["正在退出登录", false],
     [SESSION_STATE.SIGNED_OUT]: ["未登录，本机数据仍保留", false],
