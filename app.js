@@ -578,7 +578,8 @@ async function loadBooksFromCloud() {
     const decision = conflictService.compare({ entityType: "reading-note", entityId: cloudNote.id, local: localNote, cloud: cloudNote, localChanged: true });
     if (decision.outcome !== "cloud") Object.assign(cloudNote, localNote);
   }
-  state.books = bookResult.data.map((book) => ({ id: book.id, title: book.title, author: book.author || "", rating: book.rating || 0, excerpts: notesWithImages.filter((note) => note.book_id === book.id && note.note_type === "excerpt").map((note) => ({ id: note.id, text: note.text || note.body || "", image: note.image, imagePath: note.imagePath || note.image_path, updatedAt: note.updatedAt })), reflections: notesWithImages.filter((note) => note.book_id === book.id && note.note_type === "reflection").map((note) => ({ id: note.id, text: note.text || note.body || "", image: note.image, imagePath: note.imagePath || note.image_path, updatedAt: note.updatedAt })) }));
+  const localBooks = new Map(state.books.map((book) => [book.id, book]));
+  state.books = bookResult.data.map((book) => ({ id: book.id, title: book.title, author: book.author || "", rating: book.rating || 0, lastOpenedAt: localBooks.get(book.id)?.lastOpenedAt || book.updated_at || "", excerpts: notesWithImages.filter((note) => note.book_id === book.id && note.note_type === "excerpt").map((note) => ({ id: note.id, text: note.text || note.body || "", image: note.image, imagePath: note.imagePath || note.image_path, updatedAt: note.updatedAt })), reflections: notesWithImages.filter((note) => note.book_id === book.id && note.note_type === "reflection").map((note) => ({ id: note.id, text: note.text || note.body || "", image: note.image, imagePath: note.imagePath || note.image_path, updatedAt: note.updatedAt })) }));
   selectedBookId = state.books[0]?.id || null;
   saveLocal(); renderBooks();
 }
@@ -1199,9 +1200,10 @@ function renderBooks() {
   $("#bookDetail").hidden = !hasBooks;
   $("#bookCount").textContent = hasBooks ? `${state.books.length} 本书` : "";
   if (!hasBooks) { list.innerHTML = '<div class="book-empty">书架还是空的。新建一本书，开始记录你的阅读。</div>'; return; }
-  if (!state.books.some((book) => book.id === selectedBookId)) selectedBookId = state.books[0].id;
+  const sortedBooks = [...state.books].sort((a, b) => Date.parse(b.lastOpenedAt || 0) - Date.parse(a.lastOpenedAt || 0));
+  if (!state.books.some((book) => book.id === selectedBookId)) selectedBookId = sortedBooks[0].id;
   const query = $("#bookSearch").value.trim().toLocaleLowerCase();
-  const visibleBooks = state.books.filter((book) => `${book.title} ${book.author || ""}`.toLocaleLowerCase().includes(query));
+  const visibleBooks = sortedBooks.filter((book) => `${book.title} ${book.author || ""}`.toLocaleLowerCase().includes(query));
   $("#bookCount").textContent = query ? `${visibleBooks.length} / ${state.books.length} 本书` : `${state.books.length} 本书`;
   list.innerHTML = visibleBooks.length ? visibleBooks.map((book) => {
     const noteCount = (book.excerpts || []).length + (book.reflections || []).length;
@@ -1380,7 +1382,7 @@ document.addEventListener("click", (event) => {
   const star = event.target.closest("[data-rate]");
   if (star) { const book = state.books.find((item) => item.id === selectedBookId); if (book) { book.rating = Number(star.dataset.rate); saveBooks(); } return; }
   const bookButton = event.target.closest("[data-book-select]");
-  if (bookButton) { selectedBookId = bookButton.dataset.bookSelect; renderBooks(); return; }
+  if (bookButton) { const book = state.books.find((item) => item.id === bookButton.dataset.bookSelect); if (!book) return; selectedBookId = book.id; book.lastOpenedAt = new Date().toISOString(); saveLocal(); renderBooks(); void updateBookInCloud(book); return; }
   const bookEdit = event.target.closest("[data-book-edit]");
   if (bookEdit) { openBookEditor(bookEdit.dataset.bookEdit); return; }
   const bookDelete = event.target.closest("[data-book-delete]");
