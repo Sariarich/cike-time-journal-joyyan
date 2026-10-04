@@ -107,6 +107,8 @@ function queueThoughtDelete(id) {
 let selectedBookId = state.books[0]?.id || null;
 let editingExcerptId = null;
 let editingReflectionId = null;
+let activeBookComposer = "excerpt";
+const pendingBookImages = { excerpt: "", reflection: "" };
 let bookScrollTimer;
 let activeThoughtMenuId = null;
 const expandedThoughtIds = new Set();
@@ -1189,34 +1191,22 @@ function updateNoteExpanders() {
     });
   });
 }
-function centerSelectedBookCard(behavior = "auto") {
-  const card = document.querySelector(`[data-book-card="${selectedBookId}"][data-book-copy="middle"]`);
-  if (card) card.scrollIntoView({ behavior, block: "nearest", inline: "center" });
-}
-function highlightCenteredBookCard(viewport) {
-  const center = viewport.scrollLeft + viewport.clientWidth / 2;
-  const card = [...viewport.querySelectorAll("[data-book-card]")].sort((a, b) => Math.abs(a.offsetLeft + a.offsetWidth / 2 - center) - Math.abs(b.offsetLeft + b.offsetWidth / 2 - center))[0];
-  viewport.querySelectorAll("[data-book-card]").forEach((item) => item.classList.toggle("is-selected", item === card));
-  return card;
-}
-function bookCarouselDots() {
-  return state.books.map((book) => `<button class="book-carousel-dot ${book.id === selectedBookId ? "is-active" : ""}" type="button" data-book-select="${book.id}" aria-label="查看《${escapeHtml(book.title)}》"></button>`).join("");
-}
 function renderBooks() {
   const list = $("#bookList");
   const layout = $(".book-layout");
   const hasBooks = state.books.length > 0;
   layout.classList.toggle("is-empty", !hasBooks);
   $("#bookDetail").hidden = !hasBooks;
-  if (!hasBooks) { list.innerHTML = '<div class="book-empty">书架还是空的</div>'; return; }
+  $("#bookCount").textContent = hasBooks ? `${state.books.length} 本书` : "";
+  if (!hasBooks) { list.innerHTML = '<div class="book-empty">书架还是空的。新建一本书，开始记录你的阅读。</div>'; return; }
   if (!state.books.some((book) => book.id === selectedBookId)) selectedBookId = state.books[0].id;
-  $("#bookCarouselDots").innerHTML = bookCarouselDots();
-  const repeatedBooks = [...state.books, ...state.books, ...state.books];
-  list.innerHTML = repeatedBooks.map((book, index) => {
-    const copy = index < state.books.length ? "before" : index < state.books.length * 2 ? "middle" : "after";
-    return `<article class="book-card ${copy === "middle" && book.id === selectedBookId ? "is-selected" : ""}" data-book-card="${book.id}" data-book-copy="${copy}"><div class="book-card-top"><span class="book-card-actions"><button class="book-card-action" type="button" data-book-edit="${book.id}" aria-label="编辑书籍" title="编辑">✎</button><button class="book-card-action is-danger" type="button" data-book-delete="${book.id}" aria-label="删除书籍" title="删除">×</button></span></div><div class="book-card-copy" data-book-select="${book.id}"><strong>${escapeHtml(book.title)}</strong><small>${escapeHtml(book.author || "未填写作者")}</small><span class="book-stars">${stars(book.rating || 0)}</span></div></article>`;
-  }).join("");
-  centerSelectedBookCard();
+  const query = $("#bookSearch").value.trim().toLocaleLowerCase();
+  const visibleBooks = state.books.filter((book) => `${book.title} ${book.author || ""}`.toLocaleLowerCase().includes(query));
+  $("#bookCount").textContent = query ? `${visibleBooks.length} / ${state.books.length} 本书` : `${state.books.length} 本书`;
+  list.innerHTML = visibleBooks.length ? visibleBooks.map((book) => {
+    const noteCount = (book.excerpts || []).length + (book.reflections || []).length;
+    return `<article class="book-card ${book.id === selectedBookId ? "is-selected" : ""}" data-book-card="${book.id}"><button class="book-card-copy" type="button" data-book-select="${book.id}" aria-pressed="${book.id === selectedBookId}"><span class="book-card-kicker">${noteCount ? `${noteCount} 条笔记` : "尚未记录"}</span><strong>${escapeHtml(book.title)}</strong><small>${escapeHtml(book.author || "未填写作者")}</small><span class="book-stars" aria-label="${book.rating ? `${book.rating} 星评分` : "未评分"}">${book.rating ? "★".repeat(book.rating) + "☆".repeat(5 - book.rating) : "未评分"}</span></button><div class="book-card-actions"><button class="book-card-action" type="button" data-book-edit="${book.id}" aria-label="编辑《${escapeHtml(book.title)}》" title="编辑">编辑</button><button class="book-card-action is-danger" type="button" data-book-delete="${book.id}" aria-label="删除《${escapeHtml(book.title)}》" title="删除">删除</button></div></article>`;
+  }).join("") : '<div class="book-empty">没有找到匹配的书籍。</div>';
   const book = state.books.find((item) => item.id === selectedBookId);
   if (!book) return;
   const excerpts = (book.excerpts || []).map((note) => noteItem(note, "书摘")).join("") || '<p class="note-empty">还没有书摘</p>';
@@ -1225,7 +1215,15 @@ function renderBooks() {
   const editedReflection = (book.reflections || []).find((note) => note.id === editingReflectionId) || null;
   if (!editedExcerpt) editingExcerptId = null;
   if (!editedReflection) editingReflectionId = null;
-  $("#bookDetail").innerHTML = `<div class="note-section note-section--excerpt"><div class="note-section-title"><h4>书摘</h4><span>截图或文字片段</span></div><form class="note-form" id="excerptForm"><textarea id="excerptText" placeholder="摘下让你停下来的那一段文字">${escapeHtml(editedExcerpt?.text || "")}</textarea><label class="upload-button">上传截图<input id="excerptImage" type="file" accept="image/*" /></label><button class="primary-button" type="submit">${editedExcerpt ? "保存修改" : "发布书摘"}</button>${editedExcerpt ? '<button class="text-button" type="button" data-note-cancel="excerpt">取消编辑</button>' : ""}</form><div class="note-list">${excerpts}</div></div><div class="note-section note-section--reflection"><div class="note-section-title"><h4>读书心得</h4><span>你的理解与延伸</span></div><form class="note-form" id="reflectionForm"><textarea id="reflectionText" maxlength="1600" placeholder="这本书给你留下了什么？">${escapeHtml(editedReflection?.text || "")}</textarea><label class="upload-button">上传图片<input id="reflectionImage" type="file" accept="image/*" /></label><button class="primary-button" type="submit">${editedReflection ? "保存修改" : "发布心得"}</button>${editedReflection ? '<button class="text-button" type="button" data-note-cancel="reflection">取消编辑</button>' : ""}</form><div class="note-list">${reflections}</div></div>`;
+  const isExcerpt = activeBookComposer === "excerpt";
+  const editingNote = isExcerpt ? editedExcerpt : editedReflection;
+  const pendingImage = pendingBookImages[activeBookComposer];
+  const previewImage = pendingImage || editingNote?.image || "";
+  const imagePreview = previewImage ? `<div class="note-image-preview"><img src="${previewImage}" alt="待保存的${isExcerpt ? "书摘" : "心得"}图片预览" />${pendingImage ? `<button class="note-image-remove" type="button" data-remove-pending-image="${activeBookComposer}">移除图片</button>` : ""}</div>` : "";
+  const composer = isExcerpt
+    ? `<form class="note-form" id="excerptForm"><textarea id="excerptText" placeholder="摘下原文；也可以附上一张页面截图。">${escapeHtml(editedExcerpt?.text || "")}</textarea>${imagePreview}<div class="note-form-actions"><label class="upload-button">${previewImage ? "更换截图" : "添加截图"}<input id="excerptImage" type="file" accept="image/*" /></label><button class="primary-button" type="submit">${editedExcerpt ? "保存书摘" : "记录书摘"}</button></div>${editedExcerpt ? '<button class="text-button" type="button" data-note-cancel="excerpt">取消编辑</button>' : ""}</form>`
+    : `<form class="note-form" id="reflectionForm"><textarea id="reflectionText" maxlength="1600" placeholder="写下你的判断、疑问，或它与你的经验有什么关联。">${escapeHtml(editedReflection?.text || "")}</textarea>${imagePreview}<div class="note-form-actions"><label class="upload-button">${previewImage ? "更换图片" : "添加图片"}<input id="reflectionImage" type="file" accept="image/*" /></label><button class="primary-button" type="submit">${editedReflection ? "保存心得" : "记录心得"}</button></div>${editedReflection ? '<button class="text-button" type="button" data-note-cancel="reflection">取消编辑</button>' : ""}</form>`;
+  $("#bookDetail").innerHTML = `<header class="reading-notebook-head"><div><h3>${escapeHtml(book.title)}</h3><p>${escapeHtml(book.author || "作者未填写")}</p></div><div class="reading-rating"><span>评分</span><div class="rating">${stars(book.rating || 0)}</div></div></header><section class="reading-capture"><div class="reading-capture-copy"><h4>添加一条阅读记录</h4></div><div class="note-type-switch" role="tablist" aria-label="记录类型"><button class="${isExcerpt ? "is-active" : ""}" type="button" data-note-composer="excerpt" role="tab" aria-selected="${isExcerpt}">书摘</button><button class="${!isExcerpt ? "is-active" : ""}" type="button" data-note-composer="reflection" role="tab" aria-selected="${!isExcerpt}">心得</button></div>${composer}</section><section class="note-section note-section--excerpt"><div class="note-section-title"><h4>已收集的书摘</h4><span>${(book.excerpts || []).length} 条</span></div><div class="note-list">${excerpts}</div></section><section class="note-section note-section--reflection"><div class="note-section-title"><h4>读后想法</h4><span>${(book.reflections || []).length} 条</span></div><div class="note-list">${reflections}</div></section>`;
   updateNoteExpanders();
   document.querySelectorAll("[data-note-media] img").forEach((image) => image.addEventListener("load", updateNoteExpanders, { once: true }));
 }
@@ -1351,6 +1349,8 @@ $("#accountMenuButton").addEventListener("click", () => {
   $("#accountMenuButton").setAttribute("aria-expanded", String(!isOpen));
 });
 document.addEventListener("click", (event) => {
+  const removePendingImage = event.target.closest("[data-remove-pending-image]");
+  if (removePendingImage) { pendingBookImages[removePendingImage.dataset.removePendingImage] = ""; renderBooks(); return; }
   if (event.target.closest(".account-menu-wrap")) return;
   $("#accountMenu").hidden = true;
   $("#accountMenuButton").setAttribute("aria-expanded", "false");
@@ -1368,22 +1368,10 @@ $("#bookEditClose").addEventListener("click", () => $("#bookEditDialog").close()
 $("#newBookClose").addEventListener("click", () => $("#newBookDialog").close());
 $("#exportDataButton").addEventListener("click", exportAllData);
 $("#newBookButton").addEventListener("click", () => { $("#newBookForm").reset(); $("#newBookDialog").showModal(); });
-$("#bookCarouselViewport").addEventListener("scroll", () => {
-  clearTimeout(bookScrollTimer);
-  const viewport = $("#bookCarouselViewport");
-  const cards = [...viewport.querySelectorAll("[data-book-card]")];
-  const count = state.books.length;
-  if (count > 0 && cards.length >= count * 2) {
-    const cycleWidth = cards[count].offsetLeft - cards[0].offsetLeft;
-    if (viewport.scrollLeft < cycleWidth * .5) viewport.scrollLeft += cycleWidth;
-    else if (viewport.scrollLeft > cycleWidth * 1.5) viewport.scrollLeft -= cycleWidth;
-  }
-  bookScrollTimer = setTimeout(() => {
-    const card = highlightCenteredBookCard(viewport);
-    if (card && card.dataset.bookCard !== selectedBookId) { selectedBookId = card.dataset.bookCard; renderBooks(); }
-  }, 120);
-});
+$("#bookSearch").addEventListener("input", renderBooks);
 document.addEventListener("click", (event) => {
+  const composerSwitch = event.target.closest("[data-note-composer]");
+  if (composerSwitch) { activeBookComposer = composerSwitch.dataset.noteComposer; renderBooks(); return; }
   const noteMenu = event.target.closest("[data-note-menu]");
   if (noteMenu) { const id = noteMenu.dataset.noteMenu; activeNoteMenuId = activeNoteMenuId === id ? null : id; renderBooks(); return; }
   const noteExpand = event.target.closest("[data-note-expand]");
@@ -1398,17 +1386,24 @@ document.addEventListener("click", (event) => {
   const bookDelete = event.target.closest("[data-book-delete]");
   if (bookDelete) { removeBook(bookDelete.dataset.bookDelete); return; }
   const noteEdit = event.target.closest("[data-note-edit]");
-  if (noteEdit) { const isExcerpt = noteEdit.dataset.noteType === "书摘"; activeNoteMenuId = null; if (isExcerpt) editingExcerptId = noteEdit.dataset.noteEdit; else editingReflectionId = noteEdit.dataset.noteEdit; renderBooks(); $(isExcerpt ? "#excerptText" : "#reflectionText")?.focus(); return; }
+  if (noteEdit) { const isExcerpt = noteEdit.dataset.noteType === "书摘"; activeBookComposer = isExcerpt ? "excerpt" : "reflection"; activeNoteMenuId = null; if (isExcerpt) editingExcerptId = noteEdit.dataset.noteEdit; else editingReflectionId = noteEdit.dataset.noteEdit; renderBooks(); $(isExcerpt ? "#excerptText" : "#reflectionText")?.focus(); return; }
   const noteCancel = event.target.closest("[data-note-cancel]");
   if (noteCancel) { if (noteCancel.dataset.noteCancel === "excerpt") editingExcerptId = null; else editingReflectionId = null; renderBooks(); return; }
   const deleteNote = event.target.closest("[data-note-delete]");
   if (deleteNote) { const book = state.books.find((item) => item.id === selectedBookId); if (book) { const field = deleteNote.dataset.noteType === "书摘" ? "excerpts" : "reflections"; const note = (book[field] || []).find((item) => item.id === deleteNote.dataset.noteDelete); if (note) persistSyncOperation("reading-note", note.id, "delete", cloneSyncPayload(note)); expandedNoteIds.delete(deleteNote.dataset.noteDelete); activeNoteMenuId = null; book[field] = (book[field] || []).filter((item) => item.id !== deleteNote.dataset.noteDelete); saveBooks(); if (note) deleteNoteFromCloud(note); } }
 });
+document.addEventListener("change", async (event) => {
+  const input = event.target.matches("#excerptImage, #reflectionImage") ? event.target : null;
+  if (!input?.files?.[0]) return;
+  const type = input.id === "excerptImage" ? "excerpt" : "reflection";
+  pendingBookImages[type] = await imageData(input.files[0]);
+  renderBooks();
+});
 document.addEventListener("submit", async (event) => {
   if (event.target.matches("[data-summary-form]")) { await saveDailySummary(event); return; }
   if (event.target.id === "newBookForm") { event.preventDefault(); const title = $("#bookTitle").value.trim(); if (!title) return; const book = { id: uid(), title, author: $("#bookAuthor").value.trim(), rating: 0, excerpts: [], reflections: [] }; state.books.push(book); selectedBookId = book.id; saveBooks(); $("#newBookDialog").close(); showToast("书籍已创建"); return; }
   if (!["excerptForm", "reflectionForm"].includes(event.target.id)) return;
-  event.preventDefault(); const book = state.books.find((item) => item.id === selectedBookId); if (!book) return; const isExcerpt = event.target.id === "excerptForm"; const type = isExcerpt ? "excerpt" : "reflection"; const text = $(isExcerpt ? "#excerptText" : "#reflectionText").value.trim(); const image = await imageData($(isExcerpt ? "#excerptImage" : "#reflectionImage").files[0]); const field = isExcerpt ? "excerpts" : "reflections"; const editingId = isExcerpt ? editingExcerptId : editingReflectionId; const editedNote = (book[field] || []).find((note) => note.id === editingId); if (!text && !image && !editedNote) return; const note = editedNote || { id: uid(), text: "", image: "" }; note.text = text; note.updatedAt = new Date().toISOString(); if (image) note.image = image; book[field] = editedNote ? (book[field] || []).map((item) => item.id === note.id ? note : item) : [note, ...(book[field] || [])]; if (isExcerpt) editingExcerptId = null; else editingReflectionId = null; persistSyncOperation("reading-note", note.id, "upsert"); saveLocal(); renderBooks(); const result = await saveReadingNote(book, type, note, text, image || note.image); if (!result.ok && !result.local) showToast(`保存失败：${result.error?.message || "网络或权限异常"}`); else showToast(editedNote ? `${isExcerpt ? "书摘" : "心得"}已修改` : `${isExcerpt ? "书摘" : "心得"}已发布`);
+  event.preventDefault(); const book = state.books.find((item) => item.id === selectedBookId); if (!book) return; const isExcerpt = event.target.id === "excerptForm"; const type = isExcerpt ? "excerpt" : "reflection"; const text = $(isExcerpt ? "#excerptText" : "#reflectionText").value.trim(); const image = pendingBookImages[type] || await imageData($(isExcerpt ? "#excerptImage" : "#reflectionImage").files[0]); const field = isExcerpt ? "excerpts" : "reflections"; const editingId = isExcerpt ? editingExcerptId : editingReflectionId; const editedNote = (book[field] || []).find((note) => note.id === editingId); if (!text && !image && !editedNote) return; const note = editedNote || { id: uid(), text: "", image: "" }; note.text = text; note.updatedAt = new Date().toISOString(); if (image) note.image = image; book[field] = editedNote ? (book[field] || []).map((item) => item.id === note.id ? note : item) : [note, ...(book[field] || [])]; pendingBookImages[type] = ""; if (isExcerpt) editingExcerptId = null; else editingReflectionId = null; persistSyncOperation("reading-note", note.id, "upsert"); saveLocal(); renderBooks(); const result = await saveReadingNote(book, type, note, text, image || note.image); if (!result.ok && !result.local) showToast(`保存失败：${result.error?.message || "网络或权限异常"}`); else showToast(editedNote ? `${isExcerpt ? "书摘" : "心得"}已修改` : `${isExcerpt ? "书摘" : "心得"}已发布`);
 });
 $("#taskForm").addEventListener("submit", (event) => { event.preventDefault(); const title = $("#taskTitle").value.trim(); if (!title) return; const task = { id: uid(), title, time: $("#taskTime").value, date: selectedDate, done: false }; state.tasks.push(task); queueTaskUpsert(task.id); save(); event.target.reset(); renderTasks(); $("#taskTitle").focus(); });
 $("#recordForm").addEventListener("submit", async (event) => { event.preventDefault(); const title = $("#recordTitle").value.trim(); const start = $("#recordStart").value; const end = $("#recordEnd").value; if (!title || !start || !end || minutes(end) <= minutes(start)) { setSyncStatus("请填写内容，并确认结束时间晚于开始时间"); return; } const record = { id: uid(), title, start, end, category: $("#recordCategory").value, date: selectedDate }; state.records.push(record); queueRecordUpsert(record.id); saveLocal(); event.target.reset(); renderRecords(); renderStats(); renderDateControls(); await syncRecordToCloud(record); $("#recordTitle").focus(); });

@@ -8,7 +8,7 @@
     <link rel="manifest" href="right-now.webmanifest" />
     <link rel="icon" href="right-now-mark-192-v2.png" type="image/png" />
     <link rel="apple-touch-icon" href="right-now-apple-touch-icon.png" />
-    <link rel="stylesheet" href="styles-ui-v22.css" />
+    <link rel="stylesheet" href="styles-ui-v23.css" />
     <title>RIGHT NOW</title>
   </head>
   <body>
@@ -69,9 +69,9 @@
 
       <nav class="tabs" aria-label="主要视图">
         <button class="tab is-active" data-view="tasks" type="button">MISSION</button>
-        <button class="tab" data-view="timeline" type="button">24 HOURS</button>
-        <button class="tab" data-view="stats" type="button">STATISTICS</button>
-        <button class="tab" data-view="books" type="button">READING NOTES</button>
+        <button class="tab" data-view="timeline" type="button">TIMELINE</button>
+        <button class="tab" data-view="stats" type="button">STATS</button>
+        <button class="tab" data-view="books" type="button">LIBRARY</button>
         <button class="tab" data-view="thoughts" type="button">THOUGHTS</button>
       </nav>
 
@@ -144,15 +144,17 @@
 
       <section class="view" id="booksView" aria-labelledby="booksHeading">
         <div class="section-heading">
-          <div><h2 id="booksHeading">阅读笔记</h2></div>
+          <div><p class="date-label">MY LIBRARY</p><h2 id="booksHeading">阅读书架</h2></div>
           <button class="primary-button compact-button" id="newBookButton" type="button">新建书籍</button>
         </div>
         <div class="book-layout">
-          <div class="book-carousel" id="bookCarousel">
-            <div class="book-carousel-viewport" id="bookCarouselViewport">
-              <div class="book-list" id="bookList"></div>
+          <div class="book-library">
+            <div class="book-library-toolbar">
+              <label class="visually-hidden" for="bookSearch">搜索书架</label>
+              <input id="bookSearch" type="search" placeholder="搜索书名或作者" autocomplete="off" />
+              <span class="book-count" id="bookCount" aria-live="polite"></span>
             </div>
-            <div class="book-carousel-dots" id="bookCarouselDots" aria-label="书籍轮播位置"></div>
+            <div class="book-list" id="bookList"></div>
           </div>
           <section class="book-detail" id="bookDetail" aria-live="polite">
             <div class="empty-state">先新建一本书，开始记录你的阅读。</div>
@@ -236,6 +238,6 @@
     <script src="sync-queue.js?v=1"></script>
     <script src="sync-engine.js?v=1"></script>
     <script src="conflict.js?v=1"></script>
-    <script src="app.js?v=51"></script>
+    <script src="app.js?v=52"></script>
   </body>
 </html>
